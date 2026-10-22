@@ -24,7 +24,9 @@ Blender 5.3+ 的高斯泼溅（3DGS）点云编辑插件：**擦除 / 还原 / �
 
 ## 安装
 
-**扩展包（推荐）**：下载 Release 里的 `gs_editor-1.0.0.zip` →
+**下载**：[Releases](https://github.com/Neocvsu-commits/Blender-GSEditor/releases/latest) 里的 `gs_editor-1.0.0.zip`。
+
+装这个扩展包：
 
 1. Blender → 编辑 → 偏好设置 → 获取扩展（Get Extensions）；
 2. 右上角下拉菜单 → **从磁盘安装**（Install from Disk），选这个 zip；
