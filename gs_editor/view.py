@@ -1,0 +1,243 @@
+"""Screen-space picking of splats and GPU overlays for the brush."""
+
+import math
+
+import numpy as np
+import gpu
+from gpu_extras.batch import batch_for_shader
+from bpy_extras import view3d_utils
+from mathutils import Vector, Matrix
+
+
+class Projection:
+    """Screen positions and view depth of every splat, cached per view."""
+
+    def __init__(self):
+        self.key = None
+        self.sx = self.sy = self.depth = self.ok = None
+
+    def update(self, region, rv3d, S, matrix_world, revision, axes=None):
+        key = (tuple(tuple(r) for r in rv3d.perspective_matrix), region.width,
+               region.height, revision, tuple(tuple(r) for r in matrix_world))
+        if key == self.key:
+            return
+        self.key = key
+        P = np.array(rv3d.perspective_matrix @ matrix_world, np.float32)
+        V = np.array(rv3d.view_matrix @ matrix_world, np.float32)
+
+        self.P, self.width, self.height = P, region.width, region.height
+        project = self.project
+
+        pos = S.pos
+        self.sx, self.sy, self.ok = project(pos)
+        self.depth = -(pos @ V[2, :3] + V[2, 3])
+        # Screen-space half axis of each splat's long axis, for needle-shaped splats.
+        self.ax = self.ay = None
+        if axes is not None:
+            ex, ey, ok_e = project(pos + axes)
+            self.ax = np.where(ok_e, ex - self.sx, 0.0)
+            self.ay = np.where(ok_e, ey - self.sy, 0.0)
+            self.reach = np.hypot(self.ax, self.ay)
+
+    def project(self, pts):
+        """Screen x, y and in-front flag for object-space points, with the cached view."""
+        P = self.P
+        clip = pts @ P[:, :3].T + P[:, 3]
+        w = clip[:, 3]
+        ok = w > 1e-6
+        w = np.where(ok, w, 1.0)
+        return ((clip[:, 0] / w * 0.5 + 0.5) * self.width,
+                (clip[:, 1] / w * 0.5 + 0.5) * self.height, ok)
+
+    def disc(self, mx, my, radius_px, extents=False):
+        """Splats under a screen disc. With extents, any part of a splat's long axis counts."""
+        dx, dy = mx - self.sx, my - self.sy
+        d2 = dx * dx + dy * dy
+        if not extents or self.ax is None:
+            idx = np.nonzero(self.ok & (d2 < radius_px * radius_px))[0]
+            return idx, np.sqrt(d2[idx])
+        near = np.nonzero(self.ok & (np.sqrt(d2) < radius_px + self.reach))[0]
+        ax, ay = self.ax[near], self.ay[near]
+        t = np.clip((dx[near] * ax + dy[near] * ay) / np.maximum(ax * ax + ay * ay, 1e-12), -1, 1)
+        d = np.hypot(dx[near] - t * ax, dy[near] - t * ay)
+        keep = d < radius_px
+        return near[keep], d[keep]
+
+    def pick(self, S, mx, my, radius_px):
+        """Object-space point on the front splat surface under the mouse, or None.
+
+        Prefers reasonably opaque splats, but falls back to faint ones so that
+        wisps floating in empty space can still be picked.
+        """
+        for r, min_opacity in ((max(4.0, radius_px * 0.2), 0.2), (radius_px, 0.2),
+                               (radius_px, 0.03), (radius_px, 0.0)):
+            idx, _ = self.disc(mx, my, r)
+            idx = idx[S.opacity[idx] > min_opacity]
+            if len(idx) >= 3:
+                break
+        else:
+            return None
+        depth = self.depth[idx]
+        front = idx[depth <= np.percentile(depth, 10)]
+        return S.pos[front].mean(0)
+
+
+def view_vector_local(region, rv3d, mx, my, matrix_world):
+    v = view3d_utils.region_2d_to_vector_3d(region, rv3d, (mx, my))
+    v = matrix_world.inverted().to_3x3() @ v
+    return np.array(v.normalized(), np.float32)
+
+
+def pixel_radius_to_local(region, rv3d, mx, my, radius_px, hit_local, matrix_world):
+    hit_w = matrix_world @ Vector(hit_local)
+    a = view3d_utils.region_2d_to_location_3d(region, rv3d, (mx, my), hit_w)
+    b = view3d_utils.region_2d_to_location_3d(region, rv3d, (mx + radius_px, my), hit_w)
+    scale = sum(abs(s) for s in matrix_world.to_scale()) / 3.0
+    return max((a - b).length / max(scale, 1e-12), 1e-9)
+
+
+# ------------------------------------------------------------------ drawing
+def _shader(name, fallback):
+    try:
+        return gpu.shader.from_builtin(name)
+    except (ValueError, SystemError):
+        return gpu.shader.from_builtin(fallback)
+
+
+def _basis(normal):
+    n = Vector(normal).normalized()
+    t = n.orthogonal().normalized()
+    return t, n.cross(t)
+
+
+def circle_coords(center, normal, radius, segments=48):
+    t, b = _basis(normal)
+    c = Vector(center)
+    pts = []
+    for i in range(segments + 1):
+        a = 2 * math.pi * i / segments
+        pts.append(tuple(c + (t * math.cos(a) + b * math.sin(a)) * radius))
+    return pts
+
+
+def draw_lines(strips, color, width=2.0):
+    """strips: list of coordinate lists (line strips), in the current matrix space."""
+    if not strips:
+        return
+    shader = _shader('POLYLINE_UNIFORM_COLOR', 'UNIFORM_COLOR')
+    coords = []
+    for s in strips:
+        for a, b in zip(s[:-1], s[1:]):
+            coords += [a, b]
+    batch = batch_for_shader(shader, 'LINES', {"pos": coords})
+    shader.bind()
+    try:
+        vp = gpu.state.viewport_get()
+        shader.uniform_float("viewportSize", (vp[2], vp[3]))
+        shader.uniform_float("lineWidth", width)
+    except ValueError:
+        pass
+    shader.uniform_float("color", color)
+    batch.draw(shader)
+
+
+def draw_points(pos, rgba, size=3.0):
+    if pos is None or len(pos) == 0:
+        return
+    shader = _shader('POINT_FLAT_COLOR', 'FLAT_COLOR')
+    batch = batch_for_shader(shader, 'POINTS', {"pos": pos, "color": rgba})
+    gpu.state.point_size_set(size)
+    shader.bind()
+    batch.draw(shader)
+
+
+def cap(pos, rgba, limit=150000):
+    if pos is not None and len(pos) > limit:
+        step = int(math.ceil(len(pos) / limit))
+        pos = pos[::step]
+        rgba = rgba[::step] if rgba is not None and len(rgba) > 1 else rgba
+    return pos, rgba
+
+
+def solid_rgba(n, color):
+    return np.tile(np.asarray(color, np.float32), (n, 1))
+
+
+def draw_screen_ring(x, y, radius_px, color, width=1.5):
+    pts = [(x + radius_px * math.cos(a), y + radius_px * math.sin(a))
+           for a in (2 * math.pi * i / 64 for i in range(65))]
+    gpu.state.blend_set('ALPHA')
+    draw_lines([[(px, py, 0.0) for px, py in pts]], color, width)
+    gpu.state.blend_set('NONE')
+
+
+def draw_screen_discs(centres, radius_px, color, segments=24):
+    """Filled translucent circles in region pixel space (the painted bridge footprint)."""
+    if not centres:
+        return
+    ang = [2 * math.pi * i / segments for i in range(segments + 1)]
+    tris = []
+    for x, y in centres:
+        ring = [(x + radius_px * math.cos(a), y + radius_px * math.sin(a), 0.0) for a in ang]
+        for p, q in zip(ring[:-1], ring[1:]):
+            tris += [(x, y, 0.0), p, q]
+    shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+    batch = batch_for_shader(shader, 'TRIS', {"pos": tris})
+    gpu.state.blend_set('ALPHA')
+    shader.bind()
+    shader.uniform_float("color", color)
+    batch.draw(shader)
+    gpu.state.blend_set('NONE')
+
+
+class Footprint:
+    """Union of painted screen discs, rasterised so points can be tested against it."""
+
+    def __init__(self, centres, radius_px, width, height):
+        self.cell = max(2.0, radius_px / 8.0)
+        self.gw = int(width / self.cell) + 1
+        self.gh = int(height / self.cell) + 1
+        gx = (np.arange(self.gw) + 0.5) * self.cell
+        gy = (np.arange(self.gh) + 0.5) * self.cell
+        self.X, self.Y = np.meshgrid(gx, gy, indexing='ij')
+        self.centres = np.asarray(centres, np.float32)
+
+    def mask(self, extra_px=0.0, radius_px=0.0):
+        m = np.zeros((self.gw, self.gh), bool)
+        r2 = (radius_px + extra_px) ** 2
+        for x, y in self.centres:
+            m |= (self.X - x) ** 2 + (self.Y - y) ** 2 <= r2
+        return m
+
+    def lookup(self, m, sx, sy, ok):
+        ix = np.floor(sx / self.cell).astype(int)
+        iy = np.floor(sy / self.cell).astype(int)
+        inside = ok & (ix >= 0) & (iy >= 0) & (ix < self.gw) & (iy < self.gh)
+        out = np.zeros(len(sx), bool)
+        out[inside] = m[ix[inside], iy[inside]]
+        return out
+
+
+class Overlay:
+    """Everything the brush draws, in object space, pushed under matrix_world."""
+
+    def __init__(self):
+        self.matrix = Matrix.Identity(4)
+        self.rings = []          # (center, normal, radius, rgba, width)
+        self.points = []         # (pos, rgba, size)
+
+    def clear(self):
+        self.rings = []
+        self.points = []
+
+    def draw(self):
+        gpu.state.blend_set('ALPHA')
+        gpu.state.depth_test_set('NONE')
+        with gpu.matrix.push_pop():
+            gpu.matrix.multiply_matrix(self.matrix)
+            for pos, rgba, size in self.points:
+                draw_points(pos, rgba, size)
+            for center, normal, radius, color, width in self.rings:
+                draw_lines([circle_coords(center, normal, radius)], color, width)
+        gpu.state.blend_set('NONE')
+        gpu.state.point_size_set(1.0)

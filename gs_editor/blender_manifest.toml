@@ -1,0 +1,19 @@
+schema_version = "1.0.0"
+
+id = "gs_editor"
+version = "1.0.0"
+name = "GS Editor"
+tagline = "高斯泼溅编辑：擦除、还原，并用吸附到表面的矩形面片覆盖"
+maintainer = "Neo"
+type = "add-on"
+
+blender_version_min = "5.3.0"
+license = ["SPDX:GPL-3.0-or-later"]
+
+tags = ["3D View"]
+
+[permissions]
+files = "导出编辑后的泼溅点到 PLY 文件"
+
+[build]
+paths_exclude_pattern = ["__pycache__/", "*.pyc"]
