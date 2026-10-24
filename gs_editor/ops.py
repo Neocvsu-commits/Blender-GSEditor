@@ -17,6 +17,12 @@ TOOL_ITEMS = [
     ('COVER', "覆盖", "拖动框选一块区域，生成贴合表面朝向的面片盖住它", 'MESH_PLANE', 2),
 ]
 
+# 选择深度：高频切换，笔刷面板上直接并排两个按钮
+DEPTH_ITEMS = [
+    ('SURFACE', "表面", "只作用于鼠标命中处的球状区域"),
+    ('THROUGH', "穿透", "作用于屏幕区域内所有深度的泼溅点"),
+]
+
 # 工具标识 -> 中文名，状态栏、按钮和撤销记录都用它
 TOOL_NAMES = {item[0]: item[1] for item in TOOL_ITEMS}
 
@@ -124,6 +130,19 @@ class GSE_OT_set_tool(bpy.types.Operator):
 
     def execute(self, context):
         props_of(context).tool = self.tool
+        return {'FINISHED'}
+
+
+class GSE_OT_set_depth(bpy.types.Operator):
+    """切换选择深度：表面只动鼠标命中处，穿透动屏幕范围内的所有深度"""
+    bl_idname = "gse.set_depth"
+    bl_label = "选择深度"
+    bl_description = "表面：只擦鼠标命中处的球状区域 · 穿透：擦屏幕范围内所有深度的泼溅点（涂抹时按 X 也能切）"
+
+    mode: bpy.props.EnumProperty(items=DEPTH_ITEMS, default='SURFACE')
+
+    def execute(self, context):
+        props_of(context).depth_mode = self.mode
         return {'FINISHED'}
 
 
@@ -1064,6 +1083,7 @@ class GSE_OT_stop_brush(bpy.types.Operator):
 
 classes = (
     GSE_OT_set_tool,
+    GSE_OT_set_depth,
     GSE_OT_brush,
     GSE_OT_cover,
     GSE_OT_stop_cover,

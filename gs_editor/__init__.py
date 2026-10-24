@@ -2,20 +2,35 @@
 
 import bpy
 
-from . import ops, ui
+if "bpy" in locals():
+    import importlib
+    if "update_checker" in locals():
+        importlib.reload(update_checker)
+    if "ops" in locals():
+        importlib.reload(ops)
+    if "ui" in locals():
+        importlib.reload(ui)
 
-_classes = ui.classes[:1] + ops.classes + ui.classes[1:]
+from . import ops, ui, update_checker
+
+_classes = ui.classes[:1] + ops.classes + update_checker.classes + ui.classes[1:]
 
 
 def register():
     for cls in _classes:
         bpy.utils.register_class(cls)
     bpy.types.Scene.gse = bpy.props.PointerProperty(type=ui.GSE_Props)
+    # 后台查一次 GitHub Releases：不挡启动，不联网也照常能用
+    if not bpy.app.background:
+        update_checker.check_for_updates()
 
 
 def unregister():
-    ops.STATE["running"] = False
-    ops.STATE["cover"] = False
+    update_checker.stop()
     del bpy.types.Scene.gse
     for cls in reversed(_classes):
         bpy.utils.unregister_class(cls)
+
+
+if __name__ == "__main__":
+    register()

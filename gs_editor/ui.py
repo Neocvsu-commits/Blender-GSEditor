@@ -1,6 +1,7 @@
 import bpy
 
-from .ops import TOOL_ITEMS, STATE, SHORTCUTS_BRUSH, SHORTCUTS_COVER
+from . import update_checker
+from .ops import (TOOL_ITEMS, DEPTH_ITEMS, STATE, SHORTCUTS_BRUSH, SHORTCUTS_COVER)
 from .splats import is_splat_object
 
 
@@ -16,10 +17,9 @@ class GSE_Props(bpy.types.PropertyGroup):
                                       description="每一笔删除命中点的比例；松开再画可继续累积")
     spacing: bpy.props.FloatProperty(name="笔触点间距", default=0.25, min=0.05, max=2.0,
                                      description="相邻笔触点之间的距离，按半径的比例计算")
-    depth_mode: bpy.props.EnumProperty(name="选择深度", items=[
-        ('SURFACE', "表面", "只作用于鼠标命中处的球状区域"),
-        ('THROUGH', "穿透", "作用于屏幕区域内所有深度的泼溅点"),
-    ], default='SURFACE')
+    depth_mode: bpy.props.EnumProperty(name="选择深度", items=DEPTH_ITEMS, default='SURFACE',
+                                       description="表面：只作用于鼠标命中处的球状区域；"
+                                                   "穿透：作用于屏幕区域内所有深度的泼溅点")
 
     # 还原
     restore_erased: bpy.props.BoolProperty(
@@ -56,6 +56,39 @@ class GSE_Props(bpy.types.PropertyGroup):
         description="关闭采样时使用的固定颜色")
 
 
+def draw_update_banner(layout):
+    """版本 + 检查状态 + 刷新；有新版再多一条「一键更新」。主面板和偏好设置共用。"""
+    status = update_checker.get_check_status()
+    state = status["status"]
+    row = layout.row(align=True)
+    row.label(text="v" + update_checker.version_text(), icon='PACKAGE')
+    if state == 'checking':
+        row.label(text="检查中…", icon='SORTTIME')
+    elif state == 'no_update':
+        row.label(text="已是最新", icon='CHECKMARK')
+    elif state == 'installed':
+        row.label(text="已下载，重启生效", icon='IMPORT')
+    elif state == 'no_release':
+        row.label(text="暂无发布版本", icon='INFO')
+    elif state == 'no_access':
+        row.label(text="在线访问已关闭", icon='INFO')
+    elif state == 'error':
+        row.label(text="检查失败", icon='ERROR')
+    row.operator("gse.check_update", text="", icon='FILE_REFRESH')
+
+    info = update_checker.get_update_info()
+    if not info:
+        return
+    box = layout.box()
+    box.alert = True
+    col = box.column(align=True)
+    col.label(text=f"有新版本 v{info['latest_version']}（当前 v{info['current_version']}）",
+              icon='IMPORT')
+    row = col.row(align=True)
+    row.operator("gse.install_update", text="一键更新", icon='IMPORT')
+    row.operator("wm.url_open", text="更新说明", icon='URL').url = info["html_url"]
+
+
 class GSE_PT_panel(bpy.types.Panel):
     bl_label = "GS 编辑器"
     bl_idname = "GSE_PT_panel"
@@ -65,6 +98,7 @@ class GSE_PT_panel(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
+        draw_update_banner(layout)
         p = context.scene.gse
         obj = context.active_object
         if not is_splat_object(obj):
@@ -131,7 +165,16 @@ class GSE_PT_brush(_ToolPanel, bpy.types.Panel):
         col.prop(p, "feather", slider=True)
         if p.tool == 'ERASE':
             col.prop(p, "strength", slider=True)
-        col.prop(p, "depth_mode")
+        # 高频切换：表面 / 穿透并排两个按钮，不藏在下拉菜单里
+        row = col.row(align=True)
+        split = row.split(factor=getattr(col, "property_split_factor", 0.4), align=True)
+        label = split.column()
+        label.alignment = 'RIGHT'
+        label.label(text="选择深度")
+        buttons = split.row(align=True)
+        for ident, name, _desc in DEPTH_ITEMS:
+            op = buttons.operator("gse.set_depth", text=name, depress=(p.depth_mode == ident))
+            op.mode = ident
         if p.tool == 'RESTORE':
             col.prop(p, 'restore_erased')
             col.prop(p, 'remove_added')
@@ -189,5 +232,27 @@ class GSE_PT_export(_SubPanel, bpy.types.Panel):
         layout.label(text="覆盖生成的是网格面片，不写入 PLY", icon='INFO')
 
 
+class GSE_AddonPreferences(bpy.types.AddonPreferences):
+    """偏好设置：更新检查和反馈入口，和面板顶部共用同一条更新栏。"""
+    bl_idname = __package__
+
+    def draw(self, context):
+        layout = self.layout
+        draw_update_banner(layout)
+        layout.separator()
+        box = layout.box()
+        box.label(text="反馈 & 支持", icon='HELP')
+        feedback = box.row(align=True)
+        feedback.operator(
+            "wm.url_open", text="Bug / 功能建议", icon='GHOST_ENABLED'
+        ).url = "https://github.com/Neocvsu-commits/Blender-GSEditor/issues/new"
+        feedback.operator(
+            "wm.url_open", text="匿名反馈", icon='COMMUNITY'
+        ).url = "https://docs.qq.com/form/page/DTnV6S25STkxJR0Zy"
+        box.row().operator(
+            "wm.url_open", text="⭐ 作者主页（了解更多工具）", icon='URL'
+        ).url = "https://github.com/Neocvsu-commits"
+
+
 classes = (GSE_Props, GSE_PT_panel, GSE_PT_brush, GSE_PT_cover,
-           GSE_PT_shortcuts, GSE_PT_export)
+           GSE_PT_shortcuts, GSE_PT_export, GSE_AddonPreferences)

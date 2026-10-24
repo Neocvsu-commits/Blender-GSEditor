@@ -1,5 +1,6 @@
 __pycache__/
 *.py[cod]
+*.zip
 *.blend
 *.blend1
 *.blend2

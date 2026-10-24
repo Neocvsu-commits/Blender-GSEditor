@@ -4,13 +4,13 @@ Blender 5.3+ 的高斯泼溅（3DGS）点云编辑插件：**擦除、还原、�
 
 拿来清扫描数据——擦掉灰尘毛发钉子，误删了局部找回来，要遮的地方糊一块贴合表面的面片。
 
-`Blender 5.3+` · `GPL-3.0-or-later` · 基于 [Gaussian Splat Patch](https://github.com/timfennell/blender-splat-patch) 0.1.15
+`Blender 5.3+` · `v1.1.0` · `GPL-3.0-or-later` · 基于 [Gaussian Splat Patch](https://github.com/timfennell/blender-splat-patch) 0.1.15
 
 > Blender add-on for editing Gaussian splat point clouds: erase, restore, and cover with a rectangle that snaps to the surface.
 
 ## 安装
 
-下载 [Releases](https://github.com/Neocvsu-commits/Blender-GSEditor/releases/latest) 里的 `gs_editor-1.0.0.zip`：
+下载 [Releases](https://github.com/Neocvsu-commits/Blender-GSEditor/releases/latest) 里的 `gs_editor-1.1.0.zip`：
 
 1. Blender → 编辑 → 偏好设置 → 获取扩展
 2. 右上角下拉 → **从磁盘安装**，选这个 zip
@@ -46,7 +46,7 @@ Blender 5.3+ 的高斯泼溅（3DGS）点云编辑插件：**擦除、还原、�
 | --- | --- |
 | 画笔大小 · 边缘羽化 | 屏幕像素半径；羽化越宽，边缘删得越少 |
 | 擦除强度 | 一笔删掉命中点的比例 |
-| 选择深度 | 表面 = 只动命中处，穿透 = 整个屏幕区域 |
+| 选择深度 | 面板上并排两个按钮：表面 = 只动命中处，穿透 = 整个屏幕区域 |
 | 笔触点间距 | 相邻笔触的距离，按半径比例 |
 
 | 覆盖 | 说明 |
@@ -55,6 +55,18 @@ Blender 5.3+ 的高斯泼溅（3DGS）点云编辑插件：**擦除、还原、�
 | 面片偏移 | 沿法线往相机方向让开；有高斯点透出来就调大 |
 | 尺寸按屏幕投影 | 关：框多大就多大；开：放大面片让投影盖满框 |
 | 取周围颜色 · 取样环宽 | 取框外一圈的主流色；周围颜色杂时把环宽调小 |
+
+## 自动更新
+
+启动时在后台查一次 GitHub Releases，面板顶部显示版本和状态：
+
+```
+v1.1.0   ✓ 已是最新   ↻          ← 点 ↻ 手动重查
+```
+
+有新版时下面多一个红框：**一键更新** 直接下载 Release 里的扩展包覆盖安装，**更新说明** 打开 Release 页面。装完重启 Blender 生效。偏好设置 → 扩展 → GS Editor 里也有同一条更新栏和反馈入口。
+
+不想联网的话，关掉 Blender 的「允许在线访问」（偏好设置 → 系统）就不会发任何请求。
 
 ## 快捷键
 
@@ -71,7 +83,7 @@ Blender 5.3+ 的高斯泼溅（3DGS）点云编辑插件：**擦除、还原、�
 
 ## 开发
 
-`scripts/verify.py` 是 Blender 内自检，84 项，覆盖几何、界面和擦除/还原的真实代码路径。构建扩展包：
+`scripts/verify.py` 是 Blender 内自检，100 项，覆盖几何、界面、擦除/还原的真实代码路径和更新安装流程。构建扩展包：
 
 ```bash
 blender --factory-startup --command extension build --source-dir gs_editor --output-dir release

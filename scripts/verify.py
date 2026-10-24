@@ -5,14 +5,18 @@
     set GSE_ADDON_PARENT=<gs_editor 上级目录>
     blender -b --factory-startup --python scripts/verify.py
 
-检查：注册、四个面板在三种工具下的 draw、覆盖几何（拟合/网格/选点/颜色）、
-面片物体与材质创建、旧工具确实已移除、擦除路径仍可用。
+检查：注册、各面板在三种工具下的 draw、覆盖几何（拟合/网格/选点/颜色）、
+面片物体与材质创建、旧工具确实已移除、擦除路径仍可用、更新检查与覆盖安装。
 交互式拖动那部分需要真实视口，这里只测它调用的纯函数。
 """
 
 import json
 import os
+import pathlib
+import shutil
 import sys
+import tempfile
+import zipfile
 
 import bpy
 import numpy as np
@@ -24,7 +28,7 @@ if not PARENT:
 sys.path.insert(0, PARENT)
 
 import gs_editor                      # noqa: E402
-from gs_editor import cover, core, ops, ui  # noqa: E402
+from gs_editor import cover, core, ops, ui, update_checker  # noqa: E402
 from gs_editor.splats import SplatSet  # noqa: E402
 
 OUT = {"tests": [], "panels": {}}
@@ -48,11 +52,11 @@ class Layout:
         self.log.append(("label", text))
 
     def operator(self, idname, text=None, **kw):
-        self.log.append(("operator", idname, text))
+        self.log.append(("operator", idname, text, kw))
         return Layout(self.log)
 
     def prop(self, data, name, text=None, **kw):
-        self.log.append(("prop", name, text))
+        self.log.append(("prop", name, text, kw))
 
     def box(self):
         self.log.append(("box", ""))
@@ -386,8 +390,8 @@ def test_props():
 def test_ops():
     ids = [c.bl_idname for c in ops.classes]
     check("只注册需要的操作符",
-          ids == ['gse.set_tool', 'gse.brush', 'gse.cover', 'gse.stop_cover', 'gse.export_ply',
-                  'gse.merge_splats', 'gse.bake_edits', 'gse.stop_brush'], ids)
+          ids == ['gse.set_tool', 'gse.set_depth', 'gse.brush', 'gse.cover', 'gse.stop_cover',
+                  'gse.export_ply', 'gse.merge_splats', 'gse.bake_edits', 'gse.stop_brush'], ids)
     removed = [n for n in ('gse.select_all', 'gse.fill_selected', 'gse.select_floaters',
                            'gse.delete_selected') if hasattr(bpy.types, n)]
     check("旧的选择/填充操作符已移除", not removed, removed)
@@ -1015,14 +1019,43 @@ def test_ui_behaviour(obj):
           "cover_fit" in cover_props and "radius_px" not in cover_props, cover_props)
     check("覆盖面板没有嵌套方框", not any(e[0] == "box" for e in log), log[:3])
 
-    # 还原：开关是普通复选框（不是大按钮），深度是下拉（不是两排展开）
+    # 还原：开关是普通复选框（不是大按钮），选择深度是并排两个按钮（不是下拉）
     scene.gse.tool = 'RESTORE'
+    scene.gse.depth_mode = 'THROUGH'
     log = []
     ui.GSE_PT_brush.draw(panel_self(ui.GSE_PT_brush, log), ctx)
     restore_bits = [e for e in log if e[0] == "prop"]
     check("还原：开关用普通复选框",
           all((len(e) < 3 or not e[2]) for e in restore_bits if e[1] in
               ("restore_erased", "remove_added")), restore_bits)
+    depth_buttons = [e for e in log if e[0] == "operator" and e[1] == "gse.set_depth"]
+    check("选择深度是并排两个按钮，不是下拉菜单",
+          [e[2] for e in depth_buttons] == ["表面", "穿透"], depth_buttons)
+    check("当前深度对应的按钮是按下状态",
+          [e[3].get("depress") for e in depth_buttons] == [False, True],
+          [e[3].get("depress") for e in depth_buttons])
+    scene.gse.depth_mode = 'SURFACE'
+    bpy.ops.gse.set_depth(mode='THROUGH')
+    check("点深度按钮真的切了状态", scene.gse.depth_mode == 'THROUGH', scene.gse.depth_mode)
+    scene.gse.depth_mode = 'SURFACE'
+
+    # 顶部更新条：版本号 + 检查更新按钮（版本取自 blender_manifest.toml）
+    log = []
+    scene.gse.tool = 'ERASE'
+    ui.GSE_PT_panel.draw(panel_self(ui.GSE_PT_panel, log), ctx)
+    version_label = "v" + update_checker.version_text()
+    check("主面板顶部显示版本号",
+          any(e[0] == "label" and e[1] == version_label for e in log),
+          [e for e in log if e[0] == "label"][:3])
+    check("主面板顶部有检查更新按钮",
+          any(e[0] == "operator" and e[1] == "gse.check_update" for e in log), log[:5])
+
+    # 偏好设置：更新条 + 反馈入口
+    log = []
+    ui.GSE_AddonPreferences.draw(panel_self(ui.GSE_AddonPreferences, log), ctx)
+    check("偏好设置里也有更新条和反馈入口",
+          any(e[0] == "operator" and e[1] == "gse.check_update" for e in log)
+          and any(e[0] == "operator" and e[1] == "wm.url_open" for e in log), log[:8])
 
     # 快捷键按工具分组
     scene.gse.tool = 'COVER'
@@ -1044,6 +1077,92 @@ def test_ui_behaviour(obj):
           and not any("吸附" in t for t in brush_labels), brush_labels)
 
 
+def test_update_checker():
+    """更新检查：版本号、两种发布包目录布局、覆盖安装（本地 zip 走完整流程）。"""
+    check("版本号解析 v1.2.3", update_checker._parse_version("v1.2.3") == (1, 2, 3),
+          update_checker._parse_version("v1.2.3"))
+    check("版本号比较：新的才算更新",
+          update_checker._version_newer((1, 2, 3), (1, 2, 0))
+          and not update_checker._version_newer((1, 2, 0), (1, 2, 3)))
+
+    manifest = os.path.join(os.path.dirname(gs_editor.__file__), "blender_manifest.toml")
+    with open(manifest, "r", encoding="utf-8") as handle:
+        manifest_text = handle.read()
+    check("运行版本和 blender_manifest.toml 一致",
+          f'version = "{update_checker.version_text()}"' in manifest_text,
+          update_checker.version_text())
+
+    tmp = tempfile.mkdtemp(prefix="gse_verify_update_")
+    try:
+        # 发布里的扩展包：根目录就是本体
+        package = os.path.join(tmp, "package")
+        module_dir = os.path.join(package, "gs_editor")
+        os.makedirs(os.path.join(module_dir, "__pycache__"))
+        with open(os.path.join(module_dir, "blender_manifest.toml"), "w", encoding="utf-8") as handle:
+            handle.write('id = "gs_editor"\nversion = "9.9.9"\n')
+        with open(os.path.join(module_dir, "__init__.py"), "w", encoding="utf-8") as handle:
+            handle.write("# 9.9.9\n")
+        with open(os.path.join(module_dir, "new_module.py"), "w", encoding="utf-8") as handle:
+            handle.write("# new\n")
+        with open(os.path.join(module_dir, "__pycache__", "new_module.pyc"), "wb") as handle:
+            handle.write(b"\x00")
+        found = update_checker._find_extension_root(package)
+        check("认得出扩展包目录", found == module_dir, found)
+
+        # GitHub 源码归档：repo-tag/gs_editor/...
+        archive_layout = os.path.join(tmp, "archive")
+        nested = os.path.join(archive_layout, "Blender-GSEditor-9.9.9", "gs_editor")
+        os.makedirs(nested)
+        with open(os.path.join(nested, "blender_manifest.toml"), "w", encoding="utf-8"):
+            pass
+        with open(os.path.join(archive_layout, "Blender-GSEditor-9.9.9", "README.md"), "w",
+                  encoding="utf-8") as handle:
+            handle.write("readme")
+        found = update_checker._find_extension_root(archive_layout)
+        check("认得出源码归档目录", found == nested, found)
+
+        # 一键更新：本地 zip 当发布包，走「下载 → 解压 → 覆盖」全程
+        zip_path = os.path.join(tmp, "gs_editor-9.9.9.zip")
+        with zipfile.ZipFile(zip_path, "w") as archive:
+            for folder, _dirs, files in os.walk(package):
+                for name in files:
+                    path = os.path.join(folder, name)
+                    archive.write(path, os.path.relpath(path, package))
+        dest = os.path.join(tmp, "installed")
+        saved = update_checker._cache.get(update_checker.REPO)
+        update_checker._cache[update_checker.REPO] = {
+            "status": "has_update",
+            "current_version": update_checker.version_text(),
+            "latest_version": "9.9.9",
+            "zip_url": pathlib.Path(zip_path).as_uri(),
+            "html_url": "",
+        }
+        try:
+            ok, message = update_checker.install_update(plugin_dir=dest)
+            installed = [
+                os.path.isfile(os.path.join(dest, "blender_manifest.toml")),
+                os.path.isfile(os.path.join(dest, "__init__.py")),
+                os.path.isfile(os.path.join(dest, "new_module.py")),
+                not os.path.isdir(os.path.join(dest, "__pycache__")),
+            ]
+        finally:
+            if saved is None:
+                update_checker._cache.pop(update_checker.REPO, None)
+            else:
+                update_checker._cache[update_checker.REPO] = saved
+        check("一键更新把新文件覆盖进安装目录", ok and all(installed), (message, installed))
+        with open(os.path.join(dest, "new_module.py"), "r", encoding="utf-8") as handle:
+            check("更新后的文件是新版本的", handle.read() == "# new\n")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    check("没有更新时不乱装", update_checker.install_update(plugin_dir=tmp)[0] is False)
+    check("检查更新/一键更新按钮已注册",
+          hasattr(bpy.ops.gse, "check_update") and hasattr(bpy.ops.gse, "install_update"))
+    check("后台模式不会自己联网", update_checker.get_check_status()["status"] == "pending",
+          update_checker.get_check_status())
+
+
 def main():
     try:
         gs_editor.register()
@@ -1061,6 +1180,7 @@ def main():
     test_ops()
     test_props()
     test_ui_behaviour(obj)
+    test_update_checker()
     test_erase(obj)
     test_restore_path(obj)
     ok = all(t["ok"] for t in OUT["tests"])
