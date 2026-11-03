@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "gs_editor"
-version = "1.1.0"
+version = "1.2.4"
 name = "GS Editor"
 tagline = "高斯泼溅编辑：擦除、还原，并用吸附到表面的矩形面片覆盖"
 maintainer = "Neo"
@@ -13,7 +13,7 @@ license = ["SPDX:GPL-3.0-or-later"]
 tags = ["3D View"]
 
 [permissions]
-files = "导出编辑后的泼溅点到 PLY 文件"
+files = "写出编辑后的泼溅点 PLY 与覆盖面片 GLB"
 network = "检查 GitHub 上的新版本"
 
 [build]

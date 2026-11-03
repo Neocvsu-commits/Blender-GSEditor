@@ -53,17 +53,27 @@ def _sh_names(rows):
     return sorted(names, key=lambda k: int(k.rsplit('_', 1)[1]))
 
 
+def _approx_notes(nonuniform, mirrored):
+    notes = []
+    if nonuniform:
+        notes.append("非等比缩放（已取平均值）")
+    if mirrored:
+        notes.append("镜像（泼溅点无法镜像，已改用最接近的旋转）")
+    return notes
+
+
+def transform_notes(M):
+    """What carrying something through M can only approximate (see transform_rows)."""
+    return _approx_notes(*decompose(M)[3:])
+
+
 def transform_rows(rows, M):
     """A copy of splat rows ({name: [data_type, array]}) carried through the 4x4 M.
 
     Returns (rows, notes): notes lists what could only be approximated (a non-uniform scale
     becomes its average; a mirror becomes the nearest rotation)."""
     R, s, t, nonuniform, mirrored = decompose(M)
-    notes = []
-    if nonuniform:
-        notes.append("非等比缩放（已取平均值）")
-    if mirrored:
-        notes.append("镜像（泼溅点无法镜像，已改用最接近的旋转）")
+    notes = _approx_notes(nonuniform, mirrored)
     out = {k: [dt, a.copy()] for k, (dt, a) in rows.items()}
     identity = np.allclose(R, np.eye(3), atol=1e-7)
     pos = out["position"][1]

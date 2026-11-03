@@ -55,6 +55,12 @@ class GSE_Props(bpy.types.PropertyGroup):
         default=(0.8, 0.8, 0.8, 1.0),
         description="关闭采样时使用的固定颜色")
 
+    # 导出
+    export_patches_glb: bpy.props.BoolProperty(
+        name="同时导出覆盖面片 GLB", default=True,
+        description="把选中的网格合并成一个网格，和导出的 PLY 同名存成 .glb。"
+                    "覆盖面片的判定只有一条：选中的网格（点云本身除外）；没选中就不生成文件")
+
 
 def draw_update_banner(layout):
     """版本 + 检查状态 + 刷新；有新版再多一条「一键更新」。主面板和偏好设置共用。"""
@@ -229,7 +235,7 @@ class GSE_PT_export(_SubPanel, bpy.types.Panel):
         layout.operator("gse.bake_edits", icon='CHECKMARK')
         layout.operator("gse.merge_splats", icon='AUTOMERGE_ON')
         layout.operator("gse.export_ply", icon='EXPORT')
-        layout.label(text="覆盖生成的是网格面片，不写入 PLY", icon='INFO')
+        layout.prop(context.scene.gse, 'export_patches_glb')
 
 
 class GSE_AddonPreferences(bpy.types.AddonPreferences):

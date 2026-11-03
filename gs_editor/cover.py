@@ -405,6 +405,16 @@ def make_patch(context, splat_obj, verts, faces, colour, matrix=None, name="覆�
     return ob
 
 
+def patches_of(splat_obj):
+    """覆盖面片 = 选中的网格。
+
+    唯一的判定规则：当前选中的网格物体（点云本身除外）就是覆盖面片。没选中就没有面片，
+    不会去猜哪些物体「看起来像」面片。
+    """
+    return [ob for ob in bpy.context.selected_objects
+            if ob.type == 'MESH' and ob is not splat_obj]
+
+
 def project_points(region, rv3d, points):
     """世界坐标 -> 区域像素坐标（和视图里看到的一致）。"""
     P = np.array(rv3d.perspective_matrix, np.float64)

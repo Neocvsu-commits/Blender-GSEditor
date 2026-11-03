@@ -1,3 +1,4 @@
+import os
 import time
 
 import bpy
@@ -5,7 +6,7 @@ import numpy as np
 from bpy_extras.io_utils import ExportHelper
 from mathutils import Quaternion, Vector
 
-from . import core, cover, merge, view, stash
+from . import core, cover, glb_io, merge, view, stash
 from .splats import _TRACKING
 from .splats import (SplatSet, is_splat_object, major_axes, concat_rows, set_from_rows,
                      HIDDEN_ATTR, OPACITY_COLUMNS)
@@ -897,7 +898,7 @@ class GSE_OT_stop_cover(bpy.types.Operator):
 
 # =====================================================================
 class GSE_OT_export_ply(bpy.types.Operator, ExportHelper):
-    """把当前泼溅对象保存为标准 3D 高斯泼溅 PLY"""
+    """把当前泼溅对象保存为标准 3D 高斯泼溅 PLY（带上物体的位置、旋转和缩放）"""
     bl_idname = "gse.export_ply"
     bl_label = "导出泼溅 PLY"
     filename_ext = ".ply"
@@ -919,9 +920,40 @@ class GSE_OT_export_ply(bpy.types.Operator, ExportHelper):
     def execute(self, context):
         obj = active_splats(context)
         STATE["running"] = False
-        n = write_pointcloud_ply(self.filepath, obj.data)
-        self.report({'INFO'}, f"已写入 {n} 个泼溅点到 {self.filepath}")
+        # A PLY holds no scene graph, so the object's own transform is baked into the
+        # point coordinates: the file shows the splats where they are seen, not where
+        # they sit in object space.
+        M = np.array(obj.matrix_world, np.float64)
+        n = write_pointcloud_ply(self.filepath, obj.data, matrix=M)
+        msg = f"已写入 {n} 个泼溅点到 {self.filepath}"
+        notes = merge.transform_notes(M)
+        if notes:
+            self.report({'WARNING'}, msg + "。以下为近似处理：" + "；".join(notes))
+        else:
+            self.report({'INFO'}, msg)
+        self.export_patches(context, obj)
         return {'FINISHED'}
+
+    def export_patches(self, context, obj):
+        """覆盖面片合并成一个网格，和 PLY 同名导出 GLB（面片本来就不进 PLY）。
+
+        面片的判定只有一条：当前选中的网格（点云本身除外）。"""
+        props = getattr(context.scene, "gse", None)
+        if props is None or not props.export_patches_glb:
+            return
+        patches = cover.patches_of(obj)
+        if not patches:
+            self.report({'INFO'}, "没有选中网格，跳过 GLB（先选中要导出的面片）")
+            return
+        path = os.path.splitext(self.filepath)[0] + ".glb"
+        try:
+            count, verts = glb_io.write_patches_glb(context, path, patches)
+        except Exception as ex:                  # glTF 导出器没启用、写入失败等
+            self.report({'ERROR'}, f"面片 GLB 没写成：{ex}")
+            return
+        names = "、".join(o.name for o in patches[:6]) + ("…" if count > 6 else "")
+        self.report({'INFO'}, f"选中的 {count} 个网格（{names}）合并成 {verts} 个顶点，"
+                              f"写入 {path}")
 
 
 def _selected_splats(context):

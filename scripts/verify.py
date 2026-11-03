@@ -14,13 +14,14 @@ import json
 import os
 import pathlib
 import shutil
+import struct
 import sys
 import tempfile
 import zipfile
 
 import bpy
 import numpy as np
-from mathutils import Vector
+from mathutils import Matrix, Quaternion, Vector
 
 PARENT = os.environ.get("GSE_ADDON_PARENT")
 if not PARENT:
@@ -28,7 +29,7 @@ if not PARENT:
 sys.path.insert(0, PARENT)
 
 import gs_editor                      # noqa: E402
-from gs_editor import cover, core, ops, ui, update_checker  # noqa: E402
+from gs_editor import cover, core, glb_io, ops, ply_io, ui, update_checker  # noqa: E402
 from gs_editor.splats import SplatSet  # noqa: E402
 
 OUT = {"tests": [], "panels": {}}
@@ -1163,6 +1164,238 @@ def test_update_checker():
           update_checker.get_check_status())
 
 
+# --------------------------------------------------------- 导出：物体变换烘焙进 PLY
+def read_ply(path):
+    """(属性名 -> 一维数组, 点数)。只读本插件写出的那个布局：全 float、表头 end_header。"""
+    with open(path, "rb") as handle:
+        raw = handle.read()
+    end = raw.index(b"end_header\n") + len(b"end_header\n")
+    lines = raw[:end].decode("ascii").splitlines()
+    props = [line.split()[2] for line in lines if line.startswith("property")]
+    count = int(next(line for line in lines if line.startswith("element vertex")).split()[2])
+    data = np.frombuffer(raw[end:], dtype="<f4").reshape(count, len(props))
+    return {name: data[:, i] for i, name in enumerate(props)}, count
+
+
+def make_export_cloud(name, n=3):
+    """三个已知坐标、已知尺寸/朝向/颜色的泼溅点，用来核对导出写出了什么。"""
+    pc = bpy.data.pointclouds.new(name)
+    pc.resize(n)
+    pos = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 2.0, 0.0]], np.float32)
+    pc.attributes["position"].data.foreach_set("vector", pos.ravel())
+    scale = np.array([0.1, 0.2, 0.3], np.float32)
+    pc.attributes.new("scale", 'FLOAT_VECTOR', 'POINT').data.foreach_set(
+        "vector", np.tile(scale, (n, 1)).ravel())
+    half = float(np.cos(np.pi / 4))       # 绕 X 轴 90°
+    pc.attributes.new("rotation", 'QUATERNION', 'POINT').data.foreach_set(
+        "value", np.tile(np.array([half, half, 0.0, 0.0], np.float32), (n, 1)).ravel())
+    base = np.array([0.4, 0.5, 0.6, 0.8], np.float32)
+    pc.attributes.new("radiance:base", 'FLOAT_COLOR', 'POINT').data.foreach_set(
+        "color", np.tile(base, (n, 1)).ravel())
+    for k, coeff in enumerate(([0.1, 0.2, 0.3], [0.4, -0.5, 0.6], [-0.7, 0.8, 0.9])):
+        pc.attributes.new(f"radiance:sh_{k}", 'FLOAT_VECTOR', 'POINT').data.foreach_set(
+            "vector", np.tile(np.array(coeff, np.float32), (n, 1)).ravel())
+    obj = bpy.data.objects.new(name, pc)
+    bpy.context.scene.collection.objects.link(obj)
+    return obj
+
+
+def test_export_transform():
+    tmp = tempfile.mkdtemp(prefix="gse_export_")
+    made = []
+    try:
+        obj = make_export_cloud("导出测试")
+        made.append(obj)
+        pc = obj.data
+        pos_in = SplatSet.read(pc).pos.copy()
+        M = (Matrix.Translation((10.0, 0.0, 0.0))
+             @ Matrix.Rotation(np.pi / 2, 4, 'Z')
+             @ Matrix.Diagonal((2.0, 2.0, 2.0, 1.0)))
+        obj.matrix_world = M
+        mat = np.array(obj.matrix_world, np.float64)
+
+        plain = os.path.join(tmp, "object_space.ply")
+        baked = os.path.join(tmp, "world.ply")
+        same = os.path.join(tmp, "identity.ply")
+        ply_io.write_pointcloud_ply(plain, pc)
+        ply_io.write_pointcloud_ply(baked, pc, matrix=mat)
+        ply_io.write_pointcloud_ply(same, pc, matrix=np.eye(4))
+        a, _ = read_ply(plain)
+        b, n = read_ply(baked)
+
+        def xyz(table):
+            return np.stack([table["x"], table["y"], table["z"]], 1)
+
+        check("导出 物体空间就是点的原始坐标", np.abs(xyz(a) - pos_in).max() < 1e-6,
+              xyz(a)[0].tolist())
+        expect = pos_in.astype(np.float64) @ mat[:3, :3].T + mat[:3, 3]
+        check("导出 位置带上了物体的位置/旋转/缩放", np.abs(xyz(b) - expect).max() < 1e-5,
+              f"最差 {np.abs(xyz(b) - expect).max():.2e}")
+        with open(plain, "rb") as one, open(same, "rb") as two:
+            check("导出 单位矩阵不改动任何值", one.read() == two.read())
+
+        got_scale = np.exp(np.stack([b["scale_0"], b["scale_1"], b["scale_2"]], 1))
+        check("导出 尺寸乘上了物体缩放", np.abs(got_scale - np.array([0.2, 0.4, 0.6])).max() < 1e-5,
+              got_scale[0].tolist())
+
+        R_obj = np.array(obj.matrix_world.to_quaternion().to_matrix())
+        R_local = np.array(Quaternion((np.cos(np.pi / 4), np.sin(np.pi / 4), 0.0, 0.0)).to_matrix())
+        expect_R = R_obj @ R_local
+        worst = 0.0
+        for i in range(n):
+            q = Quaternion((b["rot_0"][i], b["rot_1"][i], b["rot_2"][i], b["rot_3"][i]))
+            worst = max(worst, float(np.abs(np.array(q.to_matrix()) - expect_R).max()))
+        check("导出 每个泼溅点的朝向跟着物体转", worst < 1e-5, f"最差 {worst:.2e}")
+
+        # 高阶颜色：换个方向看，转过的模型和原来的模型取到的颜色应当一致
+        rng = np.random.default_rng(3)
+        d = rng.normal(size=(16, 3))
+        d /= np.linalg.norm(d, axis=1, keepdims=True)
+        coeffs_in = np.array([[0.1, 0.2, 0.3], [0.4, -0.5, 0.6], [-0.7, 0.8, 0.9]], np.float64)
+        k = 3                                   # 这一份数据只有 band 1（3 个系数）
+        coeffs_out = np.array([[b[f"f_rest_{ch * k + j}"][0] for ch in range(3)]
+                               for j in range(k)])
+        lhs = core.sh_basis(d)[0] @ coeffs_out
+        rhs = core.sh_basis(d @ R_obj)[0] @ coeffs_in
+        check("导出 高阶颜色跟着转，看同一个方向还是同一个颜色",
+              np.abs(lhs - rhs).max() < 2e-3, f"最差 {np.abs(lhs - rhs).max():.2e}")
+
+        # 操作符本身：移动过的物体，导出文件里就该是新位置
+        obj2 = make_export_cloud("导出操作符测试")
+        made.append(obj2)
+        obj2.location = (5.0, 0.0, 0.0)
+        for other in bpy.context.view_layer.objects:
+            other.select_set(False)
+        obj2.select_set(True)
+        bpy.context.view_layer.objects.active = obj2
+        path = os.path.join(tmp, "operator.ply")
+        result = bpy.ops.gse.export_ply('EXEC_DEFAULT', filepath=path)
+        ok = result == {'FINISHED'} and os.path.isfile(path)
+        if ok:
+            c, m = read_ply(path)
+            check("导出操作符 移动后的位置写进文件",
+                  m == 3 and np.abs(xyz(c)[:, 0] - (pos_in[:, 0] + 5.0)).max() < 1e-5,
+                  xyz(c)[:, 0].tolist())
+        else:
+            check("导出操作符 移动后的位置写进文件", False, (result, os.path.isfile(path)))
+    finally:
+        for obj in made:
+            if obj.name in bpy.data.objects:
+                bpy.data.objects.remove(obj)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# --------------------------------------------- 导出：覆盖面片合并成一个 GLB
+def read_glb(path):
+    """(magic, glTF JSON)。只读字节头和 JSON 块，够核对网格结构。"""
+    with open(path, "rb") as handle:
+        raw = handle.read()
+    magic, _version, length = struct.unpack("<4sII", raw[:12])
+    doc, offset = None, 12
+    while offset < length:
+        chunk_len, chunk_type = struct.unpack("<I4s", raw[offset:offset + 8])
+        if chunk_type == b"JSON":
+            body = raw[offset + 8:offset + 8 + chunk_len]
+            doc = json.loads(body.rstrip(b" \t\r\n\x00").decode("utf-8"))
+        offset += 8 + chunk_len
+    return magic, doc
+
+
+def test_cover_glb(splat_obj):
+    tmp = tempfile.mkdtemp(prefix="gse_glb_")
+    made = []
+    try:
+        def select_only(*objs):
+            for other in bpy.context.view_layer.objects:
+                other.select_set(False)
+            for ob in objs:
+                ob.select_set(True)
+
+        quad = [(-1.0, -1.0, 0.0), (1.0, -1.0, 0.0), (1.0, 1.0, 0.0), (-1.0, 1.0, 0.0)]
+        faces = [(0, 1, 2, 3)]
+        a = cover.make_patch(bpy.context, splat_obj, quad, faces, (0.8, 0.2, 0.2))
+        made.append(a)
+        b = cover.make_patch(bpy.context, splat_obj, quad, faces, (0.2, 0.2, 0.8),
+                             matrix=Matrix.Translation((10.0, 0.0, 0.0)))
+        made.append(b)
+
+        # 判定只有一条：选中的网格就是覆盖面片（点云本身除外）
+        select_only(splat_obj, a, b)
+        check("选中的网格就是覆盖面片", set(cover.patches_of(splat_obj)) == {a, b},
+              [o.name for o in cover.patches_of(splat_obj)])
+        select_only(splat_obj, a)
+        check("没选中的网格不会被合并", cover.patches_of(splat_obj) == [a],
+              [o.name for o in cover.patches_of(splat_obj)])
+        select_only(splat_obj)
+        check("只选中点云时没有面片", cover.patches_of(splat_obj) == [],
+              [o.name for o in cover.patches_of(splat_obj)])
+        select_only()
+        check("什么都没选中时没有面片", cover.patches_of(splat_obj) == [],
+              [o.name for o in cover.patches_of(splat_obj)])
+
+        merged = glb_io.merged_mesh(bpy.context, [a, b])
+        try:
+            n = len(merged.vertices)
+            co = np.empty(n * 3, np.float64)
+            merged.vertices.foreach_get("co", co)
+            co = co.reshape(n, 3)
+            check("面片合并 顶点数相加", n == 8, n)
+            check("面片合并 顶点已经是世界坐标",
+                  abs(co[:, 0].min() + 1.0) < 1e-6 and abs(co[:, 0].max() - 11.0) < 1e-6,
+                  (round(float(co[:, 0].min()), 3), round(float(co[:, 0].max()), 3)))
+            check("面片合并 每块面片的材质都留着", len(merged.materials) == 2, len(merged.materials))
+        finally:
+            bpy.data.meshes.remove(merged)
+
+        path = os.path.join(tmp, "面片合集.glb")
+        glb_io.write_patches_glb(bpy.context, path, [a, b])
+        magic, doc = read_glb(path)
+        meshes = doc.get("meshes", []) if doc else []
+        prims = len(meshes[0].get("primitives", [])) if meshes else 0
+        check("面片 GLB 写出 glTF 文件",
+              magic == b"glTF" and os.path.getsize(path) > 200, (magic, os.path.getsize(path)))
+        check("面片 GLB 是一块网格、按材质分成两个图元",
+              len(meshes) == 1 and prims == 2, (len(meshes), prims))
+        check("面片 GLB 导出后临时物体已清理",
+              not any(o.name.startswith("覆盖面片合集") for o in bpy.data.objects),
+              [o.name for o in bpy.data.objects])
+
+        # 操作符：选中面片后导出，PLY 同名写出 GLB，合并的正是选中的两块
+        scene = bpy.context.scene
+        select_only(splat_obj, a, b)
+        bpy.context.view_layer.objects.active = splat_obj
+        ply = os.path.join(tmp, "模型_patched.ply")
+        glb = os.path.join(tmp, "模型_patched.glb")
+        scene.gse.export_patches_glb = True
+        bpy.ops.gse.export_ply('EXEC_DEFAULT', filepath=ply)
+        check("导出 PLY 时同名写出面片 GLB",
+              os.path.isfile(ply) and os.path.isfile(glb),
+              (os.path.isfile(ply), os.path.isfile(glb)))
+        _, op_doc = read_glb(glb) if os.path.isfile(glb) else (None, None)
+        op_meshes = op_doc.get("meshes", []) if op_doc else []
+        op_prims = len(op_meshes[0].get("primitives", [])) if op_meshes else 0
+        check("GLB 里合并的正是选中的两块面片", op_prims == 2, op_prims)
+
+        # 只选中点云时没有面片，不写 GLB
+        if os.path.isfile(glb):
+            os.remove(glb)
+        select_only(splat_obj)
+        bpy.ops.gse.export_ply('EXEC_DEFAULT', filepath=ply)
+        check("只选中点云时不写 GLB", not os.path.isfile(glb), os.path.isfile(glb))
+
+        # 勾掉勾选框：就算选中了面片也不写
+        select_only(splat_obj, a, b)
+        scene.gse.export_patches_glb = False
+        bpy.ops.gse.export_ply('EXEC_DEFAULT', filepath=ply)
+        check("勾掉后不再写 GLB", not os.path.isfile(glb), os.path.isfile(glb))
+        scene.gse.export_patches_glb = True
+    finally:
+        for ob in made:
+            if ob.name in bpy.data.objects:
+                bpy.data.objects.remove(ob)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     try:
         gs_editor.register()
@@ -1183,6 +1416,8 @@ def main():
     test_update_checker()
     test_erase(obj)
     test_restore_path(obj)
+    test_export_transform()
+    test_cover_glb(obj)
     ok = all(t["ok"] for t in OUT["tests"])
     print("GSE_VERIFY_BEGIN")
     print(json.dumps(OUT, ensure_ascii=False, indent=1))

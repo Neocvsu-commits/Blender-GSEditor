@@ -4,13 +4,13 @@ Blender 5.3+ 的高斯泼溅（3DGS）点云编辑插件：**擦除、还原、�
 
 拿来清扫描数据——擦掉灰尘毛发钉子，误删了局部找回来，要遮的地方糊一块贴合表面的面片。
 
-`Blender 5.3+` · `v1.1.0` · `GPL-3.0-or-later` · 基于 [Gaussian Splat Patch](https://github.com/timfennell/blender-splat-patch) 0.1.15
+`Blender 5.3+` · `v1.2.4` · `GPL-3.0-or-later` · 基于 [Gaussian Splat Patch](https://github.com/timfennell/blender-splat-patch) 0.1.15
 
 > Blender add-on for editing Gaussian splat point clouds: erase, restore, and cover with a rectangle that snaps to the surface.
 
 ## 安装
 
-下载 [Releases](https://github.com/Neocvsu-commits/Blender-GSEditor/releases/latest) 里的 `gs_editor-1.1.0.zip`：
+下载 [Releases](https://github.com/Neocvsu-commits/Blender-GSEditor/releases/latest) 里的 `gs_editor-1.2.4.zip`：
 
 1. Blender → 编辑 → 偏好设置 → 获取扩展
 2. 右上角下拉 → **从磁盘安装**，选这个 zip
@@ -38,6 +38,14 @@ Blender 5.3+ 的高斯泼溅（3DGS）点云编辑插件：**擦除、还原、�
 
 面片是刚性矩形，位置和旋转存在物体变换里，之后在 Object 面板还能调。尺寸默认「框多大就多大」，斜着看表面时屏幕投影会短一截，那是透视。
 
+## 导出
+
+PLY 只存每个点的坐标，没有场景变换节点，所以导出会把物体的位置、旋转和缩放直接烘焙进点坐标：视图里挪到哪，文件里就在哪。旋转会同时转到每个泼溅点自己的朝向和高阶（视角相关）颜色上；非等比缩放和镜像没法用单个泼溅点的旋转表示，会取等比近似，导出后给出提示。物体没动过时，导出和以前完全一致。
+
+覆盖面片是网格，进不了 PLY。导出面板上勾着「同时导出覆盖面片 GLB」时，会把这些面片按世界坐标合并成一个网格，跟 PLY 同名另存 `.glb`（`模型_patched.ply` → `模型_patched.glb`），每块面片自己的颜色都保留；没有面片就不生成文件。
+
+面片的判定只有一条：**当前选中的网格**就是覆盖面片（模型那个点云本身除外）；没选中就没有面片，不生成 GLB。导出后的提示会列出合并了哪些物体。
+
 ## 参数
 
 选擦除 / 还原时是「笔刷」面板，选覆盖时换成「覆盖」面板。
@@ -61,7 +69,7 @@ Blender 5.3+ 的高斯泼溅（3DGS）点云编辑插件：**擦除、还原、�
 启动时在后台查一次 GitHub Releases，面板顶部显示版本和状态：
 
 ```
-v1.1.0   ✓ 已是最新   ↻          ← 点 ↻ 手动重查
+v1.2.4   ✓ 已是最新   ↻          ← 点 ↻ 手动重查
 ```
 
 有新版时下面多一个红框：**一键更新** 直接下载 Release 里的扩展包覆盖安装，**更新说明** 打开 Release 页面。装完重启 Blender 生效。偏好设置 → 扩展 → GS Editor 里也有同一条更新栏和反馈入口。
@@ -76,14 +84,14 @@ v1.1.0   ✓ 已是最新   ↻          ← 点 ↻ 手动重查
 
 ## 已知限制
 
-- 覆盖生成的是网格，**不写入 PLY**；要带面片就交付 `.blend`。
+- 覆盖生成的是网格，**不写入 PLY**：勾选「同时导出覆盖面片 GLB」会另存同名 `.glb`，或者交付 `.blend`。
 - 面片是平的，很难贴住强弯曲表面；弧面拆成几块，或把「面片偏移」调大。
 - 视线与表面夹角小于约 3° 时会提示换角度。
 - 百万级点云首次进入覆盖，有一两秒读取延迟。
 
 ## 开发
 
-`scripts/verify.py` 是 Blender 内自检，100 项，覆盖几何、界面、擦除/还原的真实代码路径和更新安装流程。构建扩展包：
+`scripts/verify.py` 是 Blender 内自检，121 项，覆盖几何、界面、擦除/还原的真实代码路径、导出和更新安装流程。构建扩展包：
 
 ```bash
 blender --factory-startup --command extension build --source-dir gs_editor --output-dir release
