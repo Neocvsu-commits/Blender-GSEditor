@@ -1,0 +1,17 @@
+- 导出 PLY 会带上物体的位置、旋转和缩放（烘焙进点坐标）：模型在视图里挪到哪，文件里就在哪；旋转同时转到每个泼溅点的朝向和高阶（视角相关）颜色上
+- 新增「同时导出覆盖面片 GLB」：勾选的网格合并成一个网格，和 PLY 同名另存 `.glb`，每块面片自己的材质都保留
+- 覆盖面片的判定只有一条：当前选中的网格（点云本身除外），没选中就不生成 GLB
+- 导出面板去掉两条说明，界面更干净
+
+## 按系统下载安装包
+
+| 系统 | 安装包 | 要求 |
+| --- | --- | --- |
+| Windows | [gs_editor-1.2.4-windows.zip](https://github.com/Neocvsu-commits/Blender-GSEditor/releases/download/v1.2.4/gs_editor-1.2.4-windows.zip) | Blender 5.3+ |
+| macOS | [gs_editor-1.2.4-macos.zip](https://github.com/Neocvsu-commits/Blender-GSEditor/releases/download/v1.2.4/gs_editor-1.2.4-macos.zip) | Apple 芯片（M 系列）、macOS 13+、Blender 5.3+ |
+
+在 Blender 偏好设置 → 获取扩展 → 右上角菜单 → 从磁盘安装，直接选择对应 ZIP，无需解压。请下载上表安装包，不要选择 GitHub 自动生成的 Source code。
+
+两个包的插件功能代码相同，版本均为 1.2.4。Windows 包是原安装包重命名；macOS 包附带安装说明和许可文件。Intel Mac 不在本次支持范围内。
+
+验证：原版记录为 Blender 5.3 自检 121 项通过；macOS 包已通过压缩包完整性、12 个 Python 模块语法及源码一致性检查，尚未进行 Mac 实机安装与交互验证。
