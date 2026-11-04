@@ -1,0 +1,38 @@
+GS Editor 1.2.4 — macOS 交付说明
+
+安装包：gs_editor-1.2.4-macos.zip
+
+环境要求
+- 建议使用 Apple 芯片（M 系列）Mac，安装 macOS 13 或更新系统，以及 Blender 5.3 或更新版本。
+- 插件依赖 Blender 5.3 的原生高斯泼溅点云功能，不能通过降低清单版本号来兼容 Blender 4.x / 5.0–5.2。
+- Blender 官方已停止提供 5.x 的 Intel Mac 构建；Intel Mac 不属于本次交付的可用环境。如果是 Intel 机型，请先联系提供者确认运行环境。
+- 这是纯 Python 扩展，使用 Blender 随附的 NumPy，不需要单独安装 Python、pip 或 Windows 运行库。
+
+安装
+1. 打开 Blender 5.3 或更新版本。
+2. 打开偏好设置（Preferences）→ 获取扩展（Get Extensions）。
+3. 点击右上角下拉菜单 → 从磁盘安装（Install from Disk）。
+4. 选择 gs_editor-1.2.4-macos.zip，安装并启用。直接选择 zip，不要解压。
+5. 在 3D 视图按 N，打开「GS 编辑器」侧栏。
+
+使用
+- 导入高斯 PLY 或打开已有的高斯点云 .blend，选中点云对象。
+- 选择「擦除 / 还原 / 覆盖」，再点击「开始涂抹 / 开始覆盖」。
+- 覆盖操作：拖矩形，移动贴合，Shift+移动旋转，滚轮调偏移，左键或回车确认，Esc 取消。
+- 完整使用说明见安装包内 README.md。
+
+构建与验证范围
+- 基于当前 1.2.4 源码重新打包；功能代码、最低 Blender 版本与原版一致。
+- zip 根目录包含 blender_manifest.toml 和 __init__.py，排除了 Python 缓存，附带 LICENSE 与来源说明。
+- 构建时检查 Python 语法、压缩包完整性和源码一致性。
+- 本次在 Windows 上打包，没有 macOS 实机，尚未验证 Mac 上的安装、Metal 视口绘制及实际笔刷交互。
+
+官方参考（2026-11-04）
+Blender macOS 安装与 Intel 构建说明：
+https://docs.blender.org/manual/en/dev/getting_started/installing/macos.html
+Blender 版本兼容性：
+https://developer.blender.org/docs/release_notes/compatibility/
+Blender 5.3 原生高斯功能：
+https://developer.blender.org/docs/release_notes/5.3/rendering/
+Blender 下载（如 5.3 尚未正式发布，可选 5.3 Beta 的 macOS Apple Silicon 构建）：
+https://builder.blender.org/download/daily/
