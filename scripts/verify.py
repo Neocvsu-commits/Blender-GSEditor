@@ -1278,6 +1278,34 @@ def test_export_transform():
                   xyz(c)[:, 0].tolist())
         else:
             check("导出操作符 移动后的位置写进文件", False, (result, os.path.isfile(path)))
+
+        # 坐标轴：默认写成 glTF / 网页端的 Y-up，选 Blender 时保持原生坐标
+        props = bpy.context.scene.gse
+        yup_ply = os.path.join(tmp, "operator_yup.ply")
+        zup_ply = os.path.join(tmp, "operator_zup.ply")
+        try:
+            props.export_up_axis = 'YUP'
+            bpy.ops.gse.export_ply('EXEC_DEFAULT', filepath=yup_ply)
+            props.export_up_axis = 'ZUP'
+            bpy.ops.gse.export_ply('EXEC_DEFAULT', filepath=zup_ply)
+        finally:
+            props.export_up_axis = 'YUP'
+
+        world = pos_in.astype(np.float64) + np.array([5.0, 0.0, 0.0])
+        up, _ = read_ply(yup_ply)
+        flat, _ = read_ply(zup_ply)
+        as_yup = world[:, [0, 2, 1]] * np.array([1.0, 1.0, -1.0])   # (x, y, z) -> (x, z, -y)
+        check("导出 默认按 glTF 的 Y-up 写 (x, z, -y)",
+              np.abs(xyz(up) - as_yup).max() < 1e-5, f"最差 {np.abs(xyz(up) - as_yup).max():.2e}")
+        check("导出 选 Blender Z-up 时坐标原样写出",
+              np.abs(xyz(flat) - world).max() < 1e-5, f"最差 {np.abs(xyz(flat) - world).max():.2e}")
+
+        R_yup = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]])
+        worst = 0.0
+        for i in range(len(up["rot_0"])):
+            q = Quaternion((up["rot_0"][i], up["rot_1"][i], up["rot_2"][i], up["rot_3"][i]))
+            worst = max(worst, float(np.abs(np.array(q.to_matrix()) - R_yup @ R_local).max()))
+        check("导出 Y-up 时每个泼溅点的朝向跟着换轴", worst < 1e-5, f"最差 {worst:.2e}")
     finally:
         for obj in made:
             if obj.name in bpy.data.objects:

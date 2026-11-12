@@ -1,11 +1,14 @@
 import bpy
 
-from . import update_checker
+from . import update_checker, reference
 from .ops import (TOOL_ITEMS, DEPTH_ITEMS, STATE, SHORTCUTS_BRUSH, SHORTCUTS_COVER)
 from .splats import is_splat_object
 
 
 class GSE_Props(bpy.types.PropertyGroup):
+    reference_show: bpy.props.BoolProperty(name="显示高斯参考", default=True, update=reference.redraw)
+    reference_limit: bpy.props.IntProperty(name="显示点数上限", default=200000, min=1000, max=5000000,
+                                          description="超过上限时抽样显示，完整数据仍保存在 blend 中；提高上限会增加内存与视口开销", update=reference.redraw)
     tool: bpy.props.EnumProperty(name="工具", items=TOOL_ITEMS, default='ERASE')
 
     # 笔刷
@@ -56,6 +59,15 @@ class GSE_Props(bpy.types.PropertyGroup):
         description="关闭采样时使用的固定颜色")
 
     # 导出
+    export_up_axis: bpy.props.EnumProperty(
+        name="坐标轴",
+        items=(('YUP', "Y 轴朝上（glTF / 网页）",
+                "转成 glTF、three.js 和网页端泼溅查看器用的 Y-up，与同名的 GLB 同坐标系"),
+               ('ZUP', "Z 轴朝上（Blender）",
+                "保持 Blender 原生的 Z-up：再导回 Blender 时用它，网页端会躺着")),
+        default='YUP',
+        description="PLY 和 GLB 按同一个坐标系导出。网页端是 Y-up，选错会让泼溅点整个躺倒、"
+                    "并相对场景偏移十几米")
     export_patches_glb: bpy.props.BoolProperty(
         name="同时导出覆盖面片 GLB", default=True,
         description="把选中的网格合并成一个网格，和导出的 PLY 同名存成 .glb。"
@@ -107,6 +119,9 @@ class GSE_PT_panel(bpy.types.Panel):
         draw_update_banner(layout)
         p = context.scene.gse
         obj = context.active_object
+        if bpy.app.version < (5, 3, 0) or reference.is_reference(obj):
+            layout.label(text="高斯建模参考", icon='POINTCLOUD_DATA')
+            return
         if not is_splat_object(obj):
             layout.label(text="请选择一个高斯泼溅对象（点云）", icon='INFO')
             layout.operator("wm.ply_import", text="导入 PLY", icon='IMPORT')
@@ -140,7 +155,7 @@ class _SubPanel:
 
     @classmethod
     def poll(cls, context):
-        return is_splat_object(context.active_object)
+        return bpy.app.version >= (5, 3, 0) and is_splat_object(context.active_object)
 
 
 class _ToolPanel(_SubPanel):
@@ -235,6 +250,7 @@ class GSE_PT_export(_SubPanel, bpy.types.Panel):
         layout.operator("gse.bake_edits", icon='CHECKMARK')
         layout.operator("gse.merge_splats", icon='AUTOMERGE_ON')
         layout.operator("gse.export_ply", icon='EXPORT')
+        layout.prop(context.scene.gse, 'export_up_axis')
         layout.prop(context.scene.gse, 'export_patches_glb')
 
 

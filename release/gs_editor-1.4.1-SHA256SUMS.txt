@@ -1,0 +1,2 @@
+44d5c0f3d08b4fb9b2d61acbae34c5a1608129a75851e0ee23ab3ce5f750976b  gs_editor-1.4.1-windows.zip
+44d5c0f3d08b4fb9b2d61acbae34c5a1608129a75851e0ee23ab3ce5f750976b  gs_editor-1.4.1-macos.zip

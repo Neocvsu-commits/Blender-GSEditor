@@ -22,6 +22,17 @@ from .core import _SH_BANDS, quat_mul, sh_rotation_matrices
 from .merge import decompose, quat_from_matrix
 from .splats import SplatSet, BASE_ATTR, HIDDEN_ATTR, _LAYOUT
 
+# Blender's world is Z-up; glTF, three.js and every web splat viewer are Y-up, and the GLB
+# this addon writes next to the PLY is Y-up (Blender's glTF exporter converts it). Baking
+# this basis into the export turns a Z-up PLY into the GLB's frame -- (x, y, z) -> (x, z, -y),
+# a -90 degree turn about X, applied to centres, to each splat's rotation and to the higher
+# SH bands. Without it the splats arrive in a web viewer lying on their back, ~10 m away
+# from the rest of the scene, while the very same file looks right in Blender.
+Y_UP = np.array([[1.0, 0.0, 0.0, 0.0],
+                 [0.0, 0.0, 1.0, 0.0],
+                 [0.0, -1.0, 0.0, 0.0],
+                 [0.0, 0.0, 0.0, 1.0]], np.float64)
+
 
 def _logit(p):
     p = np.clip(p, 1e-6, 1.0 - 1e-6)

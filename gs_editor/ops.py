@@ -10,7 +10,7 @@ from . import core, cover, glb_io, merge, view, stash
 from .splats import _TRACKING
 from .splats import (SplatSet, is_splat_object, major_axes, concat_rows, set_from_rows,
                      HIDDEN_ATTR, OPACITY_COLUMNS)
-from .ply_io import write_pointcloud_ply
+from .ply_io import Y_UP, write_pointcloud_ply
 
 TOOL_ITEMS = [
     ('ERASE', "擦除", "涂抹删除泼溅点：按强度和羽化渐进删点，松开再画可继续累积", 'TRASH', 0),
@@ -897,6 +897,12 @@ class GSE_OT_stop_cover(bpy.types.Operator):
 
 
 # =====================================================================
+def export_yup(context):
+    """导出的坐标系：YUP = glTF / 网页端的 Y-up，ZUP = Blender 自己的 Z-up。"""
+    props = getattr(context.scene, "gse", None)
+    return props is None or props.export_up_axis != 'ZUP'
+
+
 class GSE_OT_export_ply(bpy.types.Operator, ExportHelper):
     """把当前泼溅对象保存为标准 3D 高斯泼溅 PLY（带上物体的位置、旋转和缩放）"""
     bl_idname = "gse.export_ply"
@@ -923,21 +929,25 @@ class GSE_OT_export_ply(bpy.types.Operator, ExportHelper):
         # A PLY holds no scene graph, so the object's own transform is baked into the
         # point coordinates: the file shows the splats where they are seen, not where
         # they sit in object space.
+        yup = export_yup(context)
         M = np.array(obj.matrix_world, np.float64)
+        if yup:                               # Blender Z-up -> the frame the GLB is written in
+            M = Y_UP @ M
         n = write_pointcloud_ply(self.filepath, obj.data, matrix=M)
-        msg = f"已写入 {n} 个泼溅点到 {self.filepath}"
+        msg = f"已写入 {n} 个泼溅点到 {self.filepath}（{'Y-up' if yup else 'Z-up'}）"
         notes = merge.transform_notes(M)
         if notes:
             self.report({'WARNING'}, msg + "。以下为近似处理：" + "；".join(notes))
         else:
             self.report({'INFO'}, msg)
-        self.export_patches(context, obj)
+        self.export_patches(context, obj, yup)
         return {'FINISHED'}
 
-    def export_patches(self, context, obj):
+    def export_patches(self, context, obj, yup=True):
         """覆盖面片合并成一个网格，和 PLY 同名导出 GLB（面片本来就不进 PLY）。
 
-        面片的判定只有一条：当前选中的网格（点云本身除外）。"""
+        面片的判定只有一条：当前选中的网格（点云本身除外）。GLB 用和 PLY 同一个坐标系写，
+        两个文件在网页里才不会错开。"""
         props = getattr(context.scene, "gse", None)
         if props is None or not props.export_patches_glb:
             return
@@ -947,7 +957,7 @@ class GSE_OT_export_ply(bpy.types.Operator, ExportHelper):
             return
         path = os.path.splitext(self.filepath)[0] + ".glb"
         try:
-            count, verts = glb_io.write_patches_glb(context, path, patches)
+            count, verts = glb_io.write_patches_glb(context, path, patches, yup=yup)
         except Exception as ex:                  # glTF 导出器没启用、写入失败等
             self.report({'ERROR'}, f"面片 GLB 没写成：{ex}")
             return

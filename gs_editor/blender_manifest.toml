@@ -1,19 +1,19 @@
 schema_version = "1.0.0"
 
 id = "gs_editor"
-version = "1.2.4"
+version = "1.4.1"
 name = "GS Editor"
-tagline = "高斯泼溅编辑：擦除、还原，并用吸附到表面的矩形面片覆盖"
+tagline = "高斯建模参考显示与原生点云擦除、还原、覆盖"
 maintainer = "Neo"
 type = "add-on"
 
-blender_version_min = "5.3.0"
+blender_version_min = "4.2.0"
 license = ["SPDX:GPL-3.0-or-later"]
 
 tags = ["3D View"]
 
 [permissions]
-files = "写出编辑后的泼溅点 PLY 与覆盖面片 GLB"
+files = "读取高斯参考 PLY，写出编辑后的泼溅点 PLY 与覆盖面片 GLB"
 network = "检查 GitHub 上的新版本"
 
 [build]

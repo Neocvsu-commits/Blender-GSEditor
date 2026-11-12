@@ -54,8 +54,10 @@ def merged_mesh(context, patches, name="覆盖面片合集"):
     return out
 
 
-def write_patches_glb(context, path, patches):
-    """并成一份网格写 GLB，返回 (块数, 顶点数)。临时物体用完就删，选择状态照原样还回去。"""
+def write_patches_glb(context, path, patches, yup=True):
+    """并成一份网格写 GLB，返回 (块数, 顶点数)。临时物体用完就删，选择状态照原样还回去。
+
+    yup: 按 glTF 的 Y-up 写（网页端用）；False 保持 Blender 的 Z-up，跟 PLY 的坐标系一致。"""
     view_layer = context.view_layer
     active = view_layer.objects.active
     active_name = active.name if active is not None else None
@@ -71,7 +73,7 @@ def write_patches_glb(context, path, patches):
         view_layer.objects.active = ob
         bpy.ops.export_scene.gltf(
             filepath=path, export_format='GLB', use_selection=True,
-            export_apply=True, export_materials='EXPORT', export_yup=True)
+            export_apply=True, export_materials='EXPORT', export_yup=yup)
         return len(patches), len(mesh.vertices)
     finally:
         bpy.data.objects.remove(ob)
