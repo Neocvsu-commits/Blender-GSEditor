@@ -61,11 +61,14 @@ class SplatSet:
 
     # ------------------------------------------------------------------ io
     @classmethod
-    def read(cls, pc):
+    def read(cls, pc, only=None):
+        """Read requested columns plus edit tracking, or all columns by default."""
         n = len(pc.points)
         arrays = {}
         for attr in pc.attributes:
             if attr.domain != 'POINT' or attr.name.startswith('.'):
+                continue
+            if only is not None and attr.name not in only:
                 continue
             layout = _LAYOUT.get(attr.data_type)
             if layout is None:

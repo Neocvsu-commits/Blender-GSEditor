@@ -4,6 +4,9 @@ import bpy
 
 if "bpy" in locals():
     import importlib
+    if "selection" in locals():
+        selection.unregister()
+        importlib.reload(selection)
     if "reference" in locals():
         reference.unregister()
         importlib.reload(reference)
@@ -14,9 +17,9 @@ if "bpy" in locals():
     if "ui" in locals():
         importlib.reload(ui)
 
-from . import ops, ui, update_checker, reference
+from . import ops, ui, update_checker, reference, selection
 
-_classes = ui.classes[:1] + ops.classes + update_checker.classes + (reference.GSE_OT_import_reference,) + ui.classes[1:] + (reference.GSE_PT_reference,)
+_classes = ui.classes[:1] + ops.classes + update_checker.classes + (reference.GSE_OT_import_reference, selection.GSE_OT_select, selection.GSE_OT_selection_action, selection.GSE_OT_selection_tool, selection.GSE_OT_selection_depth, selection.GSE_OT_brush_action) + ui.classes[1:] + (reference.GSE_PT_reference,)
 
 
 def register():
@@ -24,12 +27,14 @@ def register():
         bpy.utils.register_class(cls)
     bpy.types.Scene.gse = bpy.props.PointerProperty(type=ui.GSE_Props)
     reference.register()
+    selection.register()
     # 后台查一次 GitHub Releases：不挡启动，不联网也照常能用
     if not bpy.app.background:
         update_checker.check_for_updates()
 
 
 def unregister():
+    selection.unregister()
     reference.unregister()
     update_checker.stop()
     del bpy.types.Scene.gse

@@ -153,6 +153,11 @@ def arrays(obj):
     rgba = np.empty((n, 4), np.float32)
     rgba[:, :3] = np.clip(0.5 + 0.28209479177387814 * np.column_stack([get('f_dc_' + str(i)) for i in range(3)]), 0, 1)
     rgba[:, 3] = 1 / (1 + np.exp(-np.clip(get('opacity'), -80, 80)))
+    hidden = mesh.attributes.get('gse_selection_hidden')
+    if hidden is not None:
+        mask = np.empty(n, bool)
+        hidden.data.foreach_get('value', mask)
+        rgba[mask, 3] = 0
     _data[key] = pos, axes, rgba
     return _data[key]
 
@@ -328,6 +333,11 @@ class GSE_PT_reference(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'GS 编辑器'
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return is_reference(context.active_object)
 
     def draw(self, context):
         layout = self.layout

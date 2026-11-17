@@ -9,3 +9,5 @@ Thumbs.db
 desktop.ini
 .venv/
 venv/
+/backups/
+*.log

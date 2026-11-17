@@ -167,6 +167,7 @@ class GSE_OT_brush(bpy.types.Operator):
         p = props_of(context)
         if self.tool != 'KEEP':
             p.tool = self.tool
+        p.brush_action = p.tool
         if STATE["running"]:
             return {'CANCELLED'}  # the running brush picks up the new tool
         self.obj = context.active_object
@@ -240,6 +241,7 @@ class GSE_OT_brush(bpy.types.Operator):
             f"X 表面/穿透 · Esc 完成")
 
     def finish(self, context):
+        props_of(context).brush_action = props_of(context).tool
         if self._handle:
             bpy.types.SpaceView3D.draw_handler_remove(self._handle, 'WINDOW')
             self._handle = None
@@ -616,6 +618,8 @@ class GSE_OT_cover(bpy.types.Operator):
         return context.area and context.area.type == 'VIEW_3D' and active_splats(context)
 
     def invoke(self, context, event):
+        props_of(context).tool = 'COVER'
+        props_of(context).brush_action = 'COVER'
         self.obj = context.active_object
         self.area = context.area
         self.region = next((r for r in context.area.regions if r.type == 'WINDOW'), None)

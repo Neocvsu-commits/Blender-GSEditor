@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "gs_editor"
-version = "1.4.1"
+version = "1.5.0"
 name = "GS Editor"
 tagline = "高斯建模参考显示与原生点云擦除、还原、覆盖"
 maintainer = "Neo"

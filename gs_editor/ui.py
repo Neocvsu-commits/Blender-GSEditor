@@ -1,11 +1,17 @@
 import bpy
 
-from . import update_checker, reference
+from . import update_checker, reference, selection
 from .ops import (TOOL_ITEMS, DEPTH_ITEMS, STATE, SHORTCUTS_BRUSH, SHORTCUTS_COVER)
 from .splats import is_splat_object
 
 
 class GSE_Props(bpy.types.PropertyGroup):
+    select_shape: bpy.props.EnumProperty(name="选择方式", items=selection.TOOLS, default='BOX')
+    brush_action: bpy.props.EnumProperty(name='笔刷功能', items=selection.BRUSH_ACTIONS, default='SELECT')
+    select_depth: bpy.props.EnumProperty(name="选择深度", items=[('SURFACE', '表面', '按当前高斯对象的屏幕深度筛选前层点'), ('THROUGH', '穿透', '选择范围内所有深度的点')], default='SURFACE')
+    select_operation: bpy.props.EnumProperty(name="选区操作", items=[('REPLACE', '替换', '替换当前选区', 'SELECT_SET', 0), ('ADD', '加选', '追加到当前选区，也可按 Shift', 'SELECT_EXTEND', 1), ('SUBTRACT', '减选', '从当前选区移除，也可按 Ctrl', 'SELECT_SUBTRACT', 2)], default='REPLACE')
+    select_radius: bpy.props.IntProperty(name="选择半径", default=40, min=1, max=1000, subtype='PIXEL')
+    select_thickness: bpy.props.FloatProperty(name="表面厚度", default=0.02, min=0.00001, soft_max=1, unit='LENGTH', description="按 4 像素屏幕格的最近高斯点筛选，保留此深度差内的点；不检查其他网格的遮挡")
     reference_show: bpy.props.BoolProperty(name="显示高斯参考", default=True, update=reference.redraw)
     reference_limit: bpy.props.IntProperty(name="显示点数上限", default=200000, min=1000, max=5000000,
                                           description="超过上限时抽样显示，完整数据仍保存在 blend 中；提高上限会增加内存与视口开销", update=reference.redraw)
@@ -74,7 +80,7 @@ class GSE_Props(bpy.types.PropertyGroup):
                     "覆盖面片的判定只有一条：选中的网格（点云本身除外）；没选中就不生成文件")
 
 
-def draw_update_banner(layout):
+def draw_update_banner(layout, compact=False):
     """版本 + 检查状态 + 刷新；有新版再多一条「一键更新」。主面板和偏好设置共用。"""
     status = update_checker.get_check_status()
     state = status["status"]
@@ -82,7 +88,7 @@ def draw_update_banner(layout):
     row.label(text="v" + update_checker.version_text(), icon='PACKAGE')
     if state == 'checking':
         row.label(text="检查中…", icon='SORTTIME')
-    elif state == 'no_update':
+    elif state == 'no_update' and not compact:
         row.label(text="已是最新", icon='CHECKMARK')
     elif state == 'installed':
         row.label(text="已下载，重启生效", icon='IMPORT')
@@ -116,35 +122,35 @@ class GSE_PT_panel(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        draw_update_banner(layout)
-        p = context.scene.gse
+        draw_update_banner(layout, compact=True)
         obj = context.active_object
-        if bpy.app.version < (5, 3, 0) or reference.is_reference(obj):
-            layout.label(text="高斯建模参考", icon='POINTCLOUD_DATA')
+        if reference.is_reference(obj):
+            layout.label(text=f'{len(obj.data.vertices):,} 个高斯点', icon='POINTCLOUD_DATA')
+            selection.draw_controls(layout, context)
+            return
+        if bpy.app.version < (5, 3, 0):
+            layout.operator('gse.import_reference', icon='IMPORT')
             return
         if not is_splat_object(obj):
             layout.label(text="请选择一个高斯泼溅对象（点云）", icon='INFO')
             layout.operator("wm.ply_import", text="导入 PLY", icon='IMPORT')
             layout.operator("wm.spz_import", text="导入 SPZ", icon='IMPORT')
+            layout.operator('gse.import_reference', text='导入建模参考 PLY', icon='IMPORT')
             return
-        layout.label(text=f"{obj.name}：{len(obj.data.points):,} 个泼溅点", icon='POINTCLOUD_DATA')
-
-        grid = layout.grid_flow(columns=3, align=True, even_columns=True)
-        for ident, name, _desc, icon, _order in TOOL_ITEMS:
-            # 只切工具，不开始涂抹；真正开画要点下面的「开始涂抹 / 开始覆盖」
-            op = grid.operator("gse.set_tool", text=name, icon=icon, depress=(p.tool == ident))
-            op.tool = ident
-
-        row = layout.row()
-        row.scale_y = 1.4
+        layout.label(text=f"{len(obj.data.points):,} 个高斯点", icon='POINTCLOUD_DATA')
         if STATE["running"]:
-            row.operator("gse.stop_brush", text="停止笔刷 (Esc)", icon='CANCEL')
+            label = '结束还原' if context.scene.gse.tool == 'RESTORE' else '结束涂抹'
+            draw_brush_params(context, layout.box(), context.scene.gse.tool)
+            row = layout.row()
+            row.scale_y = 1.2
+            row.operator('gse.stop_brush', text=label, icon='CHECKMARK')
         elif STATE["cover"]:
-            row.operator("gse.stop_cover", text="停止覆盖 (Esc)", icon='CANCEL')
-        elif p.tool == 'COVER':
-            row.operator("gse.cover", text="开始覆盖", icon='MESH_PLANE')
+            draw_cover_params(context, layout.box())
+            row = layout.row()
+            row.scale_y = 1.2
+            row.operator('gse.stop_cover', text='结束覆盖', icon='CHECKMARK')
         else:
-            row.operator("gse.brush", text="开始涂抹", icon='BRUSH_DATA').tool = 'KEEP'
+            selection.draw_controls(layout, context)
 
 
 class _SubPanel:
@@ -158,82 +164,69 @@ class _SubPanel:
         return bpy.app.version >= (5, 3, 0) and is_splat_object(context.active_object)
 
 
-class _ToolPanel(_SubPanel):
-    """当前工具的参数面板：同一套行式排版，标题跟着工具换。"""
+def draw_brush_params(context, layout, tool):
+    col = layout.column()
+    col.use_property_split = True
+    col.use_property_decorate = False
+    p = context.scene.gse
+    selection.parameter_row(col, '作用范围').prop(p, 'depth_mode', text='', expand=True)
+    col.prop(p, 'radius_px', text='笔刷半径')
+    col.prop(p, 'feather', slider=True)
+    if tool == 'ERASE':
+        col.prop(p, 'strength', slider=True)
+    if tool == 'RESTORE':
+        col.prop(p, 'restore_erased')
+        col.prop(p, 'remove_added')
+    else:
+        col.prop(p, 'spacing')
+
+
+def draw_cover_params(context, layout):
+    col = layout.column()
+    col.use_property_split = True
+    col.use_property_decorate = False
+    p = context.scene.gse
+    col.prop(p, 'cover_fit', slider=True)
+    col.prop(p, 'cover_offset')
+    col.prop(p, 'cover_subdiv')
+    col.prop(p, 'cover_size_from_screen')
+    col.prop(p, 'cover_sample_color')
+    col.prop(p, 'cover_ring' if p.cover_sample_color else 'cover_color')
+
+
+class GSE_PT_advanced(_SubPanel, bpy.types.Panel):
+    bl_label = '高级工具'
+    bl_idname = 'GSE_PT_advanced'
+    bl_options = {'DEFAULT_CLOSED'}
+    bl_order = 20
+
+    @classmethod
+    def poll(cls, context):
+        return _SubPanel.poll(context) and not any(STATE.values())
 
     def draw(self, context):
         layout = self.layout
-        layout.use_property_split = True
-        layout.use_property_decorate = False       # 不要右侧的动画圆点，两套面板都干净
-        self.draw_params(context, layout.column())
-
-    def draw_params(self, context, col):
-        raise NotImplementedError
-
-
-class GSE_PT_brush(_ToolPanel, bpy.types.Panel):
-    bl_label = "笔刷"
-    bl_idname = "GSE_PT_brush"
-
-    @classmethod
-    def poll(cls, context):
-        return (is_splat_object(context.active_object)
-                and context.scene.gse.tool != 'COVER')
-
-    def draw_params(self, context, col):
-        p = context.scene.gse
-        col.prop(p, "radius_px")
-        col.prop(p, "feather", slider=True)
-        if p.tool == 'ERASE':
-            col.prop(p, "strength", slider=True)
-        # 高频切换：表面 / 穿透并排两个按钮，不藏在下拉菜单里
-        row = col.row(align=True)
-        split = row.split(factor=getattr(col, "property_split_factor", 0.4), align=True)
-        label = split.column()
-        label.alignment = 'RIGHT'
-        label.label(text="选择深度")
-        buttons = split.row(align=True)
-        for ident, name, _desc in DEPTH_ITEMS:
-            op = buttons.operator("gse.set_depth", text=name, depress=(p.depth_mode == ident))
-            op.mode = ident
-        if p.tool == 'RESTORE':
-            col.prop(p, 'restore_erased')
-            col.prop(p, 'remove_added')
-        col.prop(p, "spacing")
-
-
-class GSE_PT_cover(_ToolPanel, bpy.types.Panel):
-    bl_label = "覆盖"
-    bl_idname = "GSE_PT_cover"
-
-    @classmethod
-    def poll(cls, context):
-        return (is_splat_object(context.active_object)
-                and context.scene.gse.tool == 'COVER')
-
-    def draw_params(self, context, col):
-        p = context.scene.gse
-        col.prop(p, 'cover_fit', slider=True)
-        col.prop(p, 'cover_offset')
-        col.prop(p, 'cover_subdiv')
-        col.prop(p, 'cover_size_from_screen')
-        col.prop(p, 'cover_sample_color')
-        if p.cover_sample_color:
-            col.prop(p, 'cover_ring')
-        else:
-            col.prop(p, 'cover_color')
+        layout.enabled = selection._active is None
+        row = layout.row(align=True)
+        row.operator('gse.bake_edits', icon='CHECKMARK')
+        row.operator('gse.merge_splats', text='合并点云', icon='AUTOMERGE_ON')
+        layout.operator('gse.import_reference', text='导入建模参考 PLY', icon='IMPORT')
 
 
 class GSE_PT_shortcuts(_SubPanel, bpy.types.Panel):
     bl_label = "快捷键"
     bl_idname = "GSE_PT_shortcuts"
     bl_options = {'DEFAULT_CLOSED'}
+    bl_parent_id = 'GSE_PT_advanced'
+
+    @classmethod
+    def poll(cls, context):
+        return GSE_PT_advanced.poll(context)
 
     def draw(self, context):
         p = context.scene.gse
         cover_mode = p.tool == 'COVER'
         col = self.layout.column(align=True)
-        col.label(text="覆盖时可用：" if cover_mode else "涂抹时可用：")
         for keys, what in (SHORTCUTS_COVER if cover_mode else SHORTCUTS_BRUSH):
             row = col.row()
             split = row.split(factor=0.40)
@@ -242,14 +235,27 @@ class GSE_PT_shortcuts(_SubPanel, bpy.types.Panel):
 
 
 class GSE_PT_export(_SubPanel, bpy.types.Panel):
-    bl_label = "烘焙、合并与导出"
+    bl_label = "导出"
     bl_idname = "GSE_PT_export"
+    bl_order = 10
 
     def draw(self, context):
         layout = self.layout
-        layout.operator("gse.bake_edits", icon='CHECKMARK')
-        layout.operator("gse.merge_splats", icon='AUTOMERGE_ON')
-        layout.operator("gse.export_ply", icon='EXPORT')
+        layout.enabled = selection._active is None and not any(STATE.values())
+        row = layout.row(align=True)
+        row.operator('gse.export_ply', text='导出 PLY', icon='EXPORT')
+        row.popover(panel='GSE_PT_export_options', text='', icon='PREFERENCES')
+
+
+class GSE_PT_export_options(bpy.types.Panel):
+    bl_label = '导出设置'
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'HEADER'
+
+    def draw(self, context):
+        layout = self.layout
+        layout.use_property_split = True
+        layout.use_property_decorate = False
         layout.prop(context.scene.gse, 'export_up_axis')
         layout.prop(context.scene.gse, 'export_patches_glb')
 
@@ -276,5 +282,5 @@ class GSE_AddonPreferences(bpy.types.AddonPreferences):
         ).url = "https://github.com/Neocvsu-commits"
 
 
-classes = (GSE_Props, GSE_PT_panel, GSE_PT_brush, GSE_PT_cover,
-           GSE_PT_shortcuts, GSE_PT_export, GSE_AddonPreferences)
+classes = (GSE_Props, GSE_PT_panel, GSE_PT_export_options,
+           GSE_PT_export, GSE_PT_advanced, GSE_PT_shortcuts, GSE_AddonPreferences)
