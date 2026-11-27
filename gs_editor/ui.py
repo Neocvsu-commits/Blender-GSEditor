@@ -1,7 +1,7 @@
 import bpy
 
 from . import update_checker, reference, selection
-from .ops import (TOOL_ITEMS, DEPTH_ITEMS, STATE, SHORTCUTS_BRUSH, SHORTCUTS_COVER)
+from .ops import TOOL_ITEMS, DEPTH_ITEMS, STATE, SHORTCUTS_BRUSH
 from .splats import is_splat_object
 
 
@@ -38,46 +38,18 @@ class GSE_Props(bpy.types.PropertyGroup):
         name="移除新增点", default=True,
         description="移除编辑过程中新增的泼溅点（绿色）")
 
-    # 覆盖
-    cover_fit: bpy.props.FloatProperty(
-        name="贴合表面", default=1.0, min=0.0, max=1.0, subtype='FACTOR',
-        description="1 = 面片整块旋转对齐表面朝向；0 = 正对屏幕；中间为插值")
-    cover_offset: bpy.props.FloatProperty(
-        name="面片偏移", default=0.0, min=0.0, unit='LENGTH',
-        description="面片沿表面法线往相机方向让开多少（0 = 按面片尺寸自动取 0.6%），防和点云穿插")
-    cover_size_from_screen: bpy.props.BoolProperty(
-        name="尺寸按屏幕投影", default=False,
-        description="关（默认）：框多大就生成多大，斜看时面片投影会短一截（透视）"
-                    "；开：反过来放大面片，让它在屏幕上正好盖住框选矩形")
-    cover_subdiv: bpy.props.IntProperty(
-        name="面片细分", default=2, min=0, max=8,
-        description="面片的网格段数：越大越贴合曲面起伏，也越吃性能")
-    cover_sample_color: bpy.props.BoolProperty(
-        name="取周围颜色", default=True,
-        description="取框选外面一圈里占比最大的颜色作为面片颜色，这样能和周围表面接上；"
-                    "关掉改用下面的固定颜色")
-    cover_ring: bpy.props.FloatProperty(
-        name="取样环宽", default=0.35, min=0.05, max=2.0, subtype='FACTOR',
-        description="往外扩多少（相对框的长宽）作为取样环；周围颜色混杂时调小一点更准")
-    cover_color: bpy.props.FloatVectorProperty(
-        name="面片颜色", subtype='COLOR', size=4, min=0.0, max=1.0,
-        default=(0.8, 0.8, 0.8, 1.0),
-        description="关闭采样时使用的固定颜色")
-
     # 导出
     export_up_axis: bpy.props.EnumProperty(
         name="坐标轴",
-        items=(('YUP', "Y 轴朝上（glTF / 网页）",
-                "转成 glTF、three.js 和网页端泼溅查看器用的 Y-up，与同名的 GLB 同坐标系"),
-               ('ZUP', "Z 轴朝上（Blender）",
-                "保持 Blender 原生的 Z-up：再导回 Blender 时用它，网页端会躺着")),
+        items=(('YUP', "Y 轴朝上（网页兼容 / glTF）",
+                "将 Blender 世界坐标转为 Y-up，适用于直接按 Y 朝上显示的网页；"
+                "LCC 查看器若自行转轴，应改选 Z 轴朝上"),
+               ('ZUP', "Z 轴朝上（LCC 标准 / Blender）",
+                "保留 Blender 世界坐标；符合 LCC 标准 Z-up 约定，也适合导回 Blender")),
         default='YUP',
-        description="PLY 和 GLB 按同一个坐标系导出。网页端是 Y-up，选错会让泼溅点整个躺倒、"
-                    "并相对场景偏移十几米")
-    export_patches_glb: bpy.props.BoolProperty(
-        name="同时导出覆盖面片 GLB", default=True,
-        description="把选中的网格合并成一个网格，和导出的 PLY 同名存成 .glb。"
-                    "覆盖面片的判定只有一条：选中的网格（点云本身除外）；没选中就不生成文件")
+        description="所有导出格式都遵从此设置；位置、旋转和高阶球谐统一转换。"
+                    "LCC 标准为 Z-up，不自动转轴的网页可使用 Y-up 兼容模式")
+
 
 
 def draw_update_banner(layout, compact=False):
@@ -138,17 +110,14 @@ class GSE_PT_panel(bpy.types.Panel):
             layout.operator('gse.import_reference', text='导入建模参考 PLY', icon='IMPORT')
             return
         layout.label(text=f"{len(obj.data.points):,} 个高斯点", icon='POINTCLOUD_DATA')
+        from .mode import draw_mode_status
+        draw_mode_status(layout, context)
         if STATE["running"]:
             label = '结束还原' if context.scene.gse.tool == 'RESTORE' else '结束涂抹'
             draw_brush_params(context, layout.box(), context.scene.gse.tool)
             row = layout.row()
             row.scale_y = 1.2
             row.operator('gse.stop_brush', text=label, icon='CHECKMARK')
-        elif STATE["cover"]:
-            draw_cover_params(context, layout.box())
-            row = layout.row()
-            row.scale_y = 1.2
-            row.operator('gse.stop_cover', text='结束覆盖', icon='CHECKMARK')
         else:
             selection.draw_controls(layout, context)
 
@@ -181,19 +150,6 @@ def draw_brush_params(context, layout, tool):
         col.prop(p, 'spacing')
 
 
-def draw_cover_params(context, layout):
-    col = layout.column()
-    col.use_property_split = True
-    col.use_property_decorate = False
-    p = context.scene.gse
-    col.prop(p, 'cover_fit', slider=True)
-    col.prop(p, 'cover_offset')
-    col.prop(p, 'cover_subdiv')
-    col.prop(p, 'cover_size_from_screen')
-    col.prop(p, 'cover_sample_color')
-    col.prop(p, 'cover_ring' if p.cover_sample_color else 'cover_color')
-
-
 class GSE_PT_advanced(_SubPanel, bpy.types.Panel):
     bl_label = '高级工具'
     bl_idname = 'GSE_PT_advanced'
@@ -224,10 +180,8 @@ class GSE_PT_shortcuts(_SubPanel, bpy.types.Panel):
         return GSE_PT_advanced.poll(context)
 
     def draw(self, context):
-        p = context.scene.gse
-        cover_mode = p.tool == 'COVER'
         col = self.layout.column(align=True)
-        for keys, what in (SHORTCUTS_COVER if cover_mode else SHORTCUTS_BRUSH):
+        for keys, what in SHORTCUTS_BRUSH:
             row = col.row()
             split = row.split(factor=0.40)
             split.label(text=keys)
@@ -241,9 +195,15 @@ class GSE_PT_export(_SubPanel, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
+        from . import export_formats
+        if export_formats._job is not None:
+            row = layout.row(align=True)
+            row.label(text='正在导出 ' + export_formats._job.format, icon='TIME')
+            row.operator('gse.cancel_export', text='', icon='CANCEL')
+            return
         layout.enabled = selection._active is None and not any(STATE.values())
         row = layout.row(align=True)
-        row.operator('gse.export_ply', text='导出 PLY', icon='EXPORT')
+        row.menu('GSE_MT_export', text='导出高斯', icon='EXPORT')
         row.popover(panel='GSE_PT_export_options', text='', icon='PREFERENCES')
 
 
@@ -257,7 +217,6 @@ class GSE_PT_export_options(bpy.types.Panel):
         layout.use_property_split = True
         layout.use_property_decorate = False
         layout.prop(context.scene.gse, 'export_up_axis')
-        layout.prop(context.scene.gse, 'export_patches_glb')
 
 
 class GSE_AddonPreferences(bpy.types.AddonPreferences):

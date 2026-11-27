@@ -13,9 +13,8 @@ GS Editor 是 [Gaussian Splat Patch](https://github.com/timfennell/blender-splat
 
 ## GS Editor 的改动
 
-- 工具精简为 **擦除 / 还原 / 覆盖** 三个；界面重做为中文面板（主面板 / 笔刷·覆盖 / 快捷键 / 烘焙导出）；
-- 新增**覆盖**（`cover.py`）：贴合表面的刚性矩形面片，自动吸附到局部表面、跟着鼠标滑动、左键确认，
-  手动旋转作为兜底；颜色取框外一圈的主流色；
+- 选择、擦除和还原的中文界面与原生选区联动；多格式及多级 LOD 导出；
+- 早期版本新增的覆盖面片功能及附带 GLB 导出已在 v1.8.0 移除，已有场景网格保持原样；
 - 交互细节：工具按钮只切换工具不自动开画、快捷键面板按工具分组、两套参数面板同构；
 - 全中文文案。
 
@@ -28,3 +27,35 @@ GS Editor 是 [Gaussian Splat Patch](https://github.com/timfennell/blender-splat
 ## 许可
 
 GPL-3.0-or-later，完整文本见 `LICENSE`。
+# Additional component (v1.6.0)
+
+Google WebP 1.6.0 `cwebp` is redistributed unmodified under its BSD license,
+with the license and patent grant in `gs_editor/vendor/webp/COPYING` and `PATENTS`.
+Distribution URLs and archive checksums are in `gs_editor/vendor/webp/README.md`.
+
+## LCC / LCC2 data organization (v1.7.0)
+
+Data Organization Format originated from XGRIDS
+
+GS Editor independently writes the published LCC and LCC2 organizations. This
+does not represent an official XGRIDS implementation or endorsement. The
+organization itself is not extended; spatial partitioning and approximate
+Gaussian LOD generation are performed by GS Editor.
+
+The data organization formats are used and distributed under authorization
+in their respective White Papers. XGRIDS and its affiliates retain their
+intellectual property and other rights in those formats:
+
+- LCC specification, license and restrictions: https://github.com/xgrids/LCCWhitepaper
+- LCC2 specification, license and restrictions: https://github.com/xgrids/LCC2Whitepaper
+
+Those format conditions apply in addition to this implementation's GPL source
+license; they are not an MIT grant. Exported packages include FORMAT_NOTICE.txt
+with attribution, the White Paper link and redistribution/use conditions.
+Retain that notice when sharing and display the required attribution in the
+consuming application. In particular, without prior written consent, these
+formats must not be used for training or fine-tuning an AI model competing
+directly or indirectly with XGRIDS products or services; inform recipients
+in writing and incorporate this restriction into applicable agreements.
+The White Papers also specify public-availability obligations for derivative
+formats or content and further restrictions; the linked full terms apply.

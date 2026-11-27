@@ -13,11 +13,11 @@ from .splats import SplatSet, SELECT_ATTR, BASE_ATTR, HIDDEN_ATTR, OPACITY_COLUM
 TOOLS = [('BOX', '框选', '拖动矩形选择', 'NONE', 0),
          ('LASSO', '套索', '按住左键自由绘制闭合选区', 'NONE', 2),
          ('POLYGON', '多边形', '逐点单击，回车闭合，退格删除上一个顶点', 'NONE', 3),
-         ('BRUSH', '笔刷', '连续选点，或切换涂抹与覆盖', 'NONE', 4)]
+         ('BRUSH', '笔刷', '连续选点，或切换涂抹与还原', 'NONE', 4)]
+# Keep RESTORE at 3: saved COVER actions used the retired enum number 2.
 BRUSH_ACTIONS = [('SELECT', '选点', '先刷出选区，再执行擦除', 'NONE', 0),
                  ('ERASE', '涂抹', '用强度和羽化控制直接擦除', 'NONE', 1),
-                 ('RESTORE', '还原', '用笔刷恢复擦除区域', 'NONE', 3),
-                 ('COVER', '覆盖', '建立贴合表面的覆盖面片', 'NONE', 2)]
+                 ('RESTORE', '还原', '用笔刷恢复擦除区域', 'NONE', 3)]
 HIDDEN = 'gse_selection_hidden'
 NATIVE_SELECTION = '.selection'
 NATIVE_TOOLS = {'BOX': 'builtin.select_box', 'BRUSH': 'builtin.select_circle', 'LASSO': 'builtin.select_lasso'}
@@ -27,8 +27,16 @@ TOOL_ICONS = {'BOX': 'ops.generic.select_box',
 _active = None
 _handle = None
 _cache = {}
+_projection_cache = None
 _registered_tools = []
 COMMIT_INTERVAL = 1 / 20
+
+
+def finish_for_mode_switch(context):
+    """Commit a valid gesture before the caller changes Blender's mode."""
+    if _active is not None:
+        return _active.complete_for_mode_switch(context)
+    return {'FINISHED'}
 
 
 def supported(obj):
@@ -62,7 +70,11 @@ def write_mask(obj, values, name=SELECT_ATTR):
     attr = obj.data.attributes.get(name) or obj.data.attributes.new(name, 'BOOLEAN', 'POINT')
     attr.data.foreach_set('value', np.ascontiguousarray(values, dtype=np.float32 if attr.data_type == 'FLOAT' else bool))
     obj.data.update_tag()
-    clear_cache()
+    if name in {SELECT_ATTR, NATIVE_SELECTION}:
+        # Changing selection does not change projected positions or visibility.
+        _cache.clear()
+    else:
+        clear_cache()
     if reference.is_reference(obj):
         reference.invalidate()
 
@@ -113,12 +125,38 @@ def polygon_mask(xy, vertices):
     if len(vertices) < 3:
         return result
     x, y = xy.T
+    # Sorting is unnecessary for short contours or small candidate sets.
+    if len(vertices) <= 12 or len(xy) < 256:
+        a = vertices[-1]
+        for b in vertices:
+            if a[1] != b[1]:
+                crossing = ((a[1] > y) != (b[1] > y))
+                result ^= crossing & (x <= (b[0]-a[0]) * (y-a[1]) / (b[1]-a[1]) + a[0])
+            a = b
+        return result
+
+    # An edge can only cross points in its half-open vertical interval.
+    # Sort once, then evaluate intersections on that contiguous slice instead
+    # of every candidate for every sampled lasso segment. No vertex is removed.
+    order = np.argsort(y)
+    sorted_y, sorted_x = y[order], x[order]
+    sorted_result = np.zeros(len(xy), bool)
     a = vertices[-1]
     for b in vertices:
         if a[1] != b[1]:
-            crossing = ((a[1] > y) != (b[1] > y))
-            result ^= crossing & (x <= (b[0]-a[0]) * (y-a[1]) / (b[1]-a[1]) + a[0])
+            # Match NumPy's scalar/array comparison promotion, including a
+            # float32 candidate array with Python float contour coordinates.
+            ay = np.asarray(a[1], dtype=np.result_type(y, a[1])).item()
+            by = np.asarray(b[1], dtype=np.result_type(y, b[1])).item()
+            start = np.searchsorted(sorted_y, min(ay, by), side='left')
+            stop = np.searchsorted(sorted_y, max(ay, by), side='left')
+            if start < stop:
+                section = slice(start, stop)
+                sorted_result[section] ^= (
+                    sorted_x[section] <= (b[0]-a[0]) * (sorted_y[section]-a[1]) / (b[1]-a[1]) + a[0]
+                )
         a = b
+    result[order] = sorted_result
     return result
 
 
@@ -184,6 +222,36 @@ class ScreenIndex:
         return ids if tool == 'BOX' else ids[shape_mask(xy, tool, points, radius)]
 
 
+def projection_index(obj, rv, region, depth_mode, tolerance):
+    """Reuse one view's exact index, validating even edits made outside GS Editor."""
+    global _projection_cache
+    matrix = np.array(rv.perspective_matrix @ obj.matrix_world)
+    view_matrix = np.array(rv.view_matrix @ obj.matrix_world) if depth_mode == 'SURFACE' else None
+    key = (obj.as_pointer(), obj.data.as_pointer(), obj.mode,
+           region.width, region.height, depth_mode,
+           tolerance if view_matrix is not None else None, matrix.tobytes(),
+           view_matrix.tobytes() if view_matrix is not None else None)
+    # Native transforms and attribute edits do not bump gsp_revision. Comparing
+    # fresh arrays is cheap relative to projecting and depth-filtering millions
+    # of points, and avoids reusing stale coordinates after native edits.
+    pos, visible = cloud(obj)
+    cached = _projection_cache
+    if (cached is not None and cached[0] == key
+            and np.array_equal(pos, cached[1]) and np.array_equal(visible, cached[2])):
+        return cached[3]
+    _projection_cache = cached = None
+    xy, valid = screen_points(pos, matrix, region.width, region.height)
+    valid &= visible
+    if view_matrix is not None:
+        depth = -(pos @ view_matrix[2, :3] + view_matrix[2, 3])
+        valid = surface_mask(xy, depth, valid, region.width, region.height, tolerance)
+    # One index works for all four tools; changing shape keeps the warm view.
+    index = ScreenIndex(xy, valid, region.width, region.height, moving=True)
+    # Reference arrays are owned by the viewer; keep an independent snapshot.
+    _projection_cache = (key, pos.copy() if reference.is_reference(obj) else pos, visible, index)
+    return index
+
+
 class SelectionStroke:
     """Keep the full selection in memory; change only hit indices per event."""
     def __init__(self, original, operation):
@@ -216,7 +284,9 @@ def combine(original, hits, operation):
 
 @persistent
 def clear_cache(*_):
+    global _projection_cache
     _cache.clear()
+    _projection_cache = None
 
 
 def draw_selection():
@@ -270,18 +340,21 @@ class GSE_OT_select(bpy.types.Operator):
 
     def invoke(self, context, event):
         global _active
+        self._finished = False
         if self.shape == 'BRUSH' and is_splat_object(context.active_object) and context.scene.gse.brush_action != 'SELECT':
-            label = {'ERASE': '开始涂抹', 'RESTORE': '开始还原', 'COVER': '开始覆盖'}[context.scene.gse.brush_action]
+            label = {'ERASE': '开始涂抹', 'RESTORE': '开始还原'}[context.scene.gse.brush_action]
             self.report({'INFO'}, '请在笔刷参数下点击“' + label + '”')
             return {'CANCELLED'}
         self.obj, self.area = context.active_object, context.area
+        self.window_manager = context.window_manager
+        self.workspace = context.workspace
         self.mode = context.mode
         if self.obj.data.users > 1 or self.obj.data.library:
             self.report({'ERROR'}, '请先将高斯数据设为本地单用户数据')
             return {'CANCELLED'}
         self.region = next(r for r in self.area.regions if r.type == 'WINDOW')
         self.rv = self.area.spaces.active.region_3d
-        self.pos, self.visible = cloud(self.obj)
+        self.pos = self.visible = None
         self.mesh_pointer = self.obj.data.as_pointer()
         self.n = count(self.obj)
         self.points, self.mouse = [], (0, 0)
@@ -306,21 +379,14 @@ class GSE_OT_select(bpy.types.Operator):
             self.cancel(context)
             self.report({'ERROR'}, str(ex))
             return {'CANCELLED'}
-        context.workspace.status_text_set('Shift 加选 · Ctrl 减选 · 滚轮 半径 · 多边形回车确认/退格回退 · Esc 取消')
+        context.workspace.status_text_set('Shift 加选 · Ctrl 减选 · 滚轮 半径 · 多边形回车确认/退格回退 · Esc 取消 · Tab 返回物体模式')
         return {'RUNNING_MODAL'}
 
     def start(self, context, event, mouse):
         p = context.scene.gse
         self.operation = 'SUBTRACT' if event.ctrl else 'ADD' if event.shift else p.select_operation
         self.stroke = SelectionStroke(read_mask(self.obj), self.operation)
-        matrix = np.array(self.rv.perspective_matrix @ self.obj.matrix_world)
-        xy, valid = screen_points(self.pos, matrix, self.region.width, self.region.height)
-        valid &= self.visible
-        if p.select_depth == 'SURFACE':
-            view_matrix = np.array(self.rv.view_matrix @ self.obj.matrix_world)
-            depth = -(self.pos @ view_matrix[2, :3] + view_matrix[2, 3])
-            valid = surface_mask(xy, depth, valid, self.region.width, self.region.height, p.select_thickness)
-        self.index = ScreenIndex(xy, valid, self.region.width, self.region.height, moving=self.tool == 'BRUSH')
+        self.index = projection_index(self.obj, self.rv, self.region, p.select_depth, p.select_thickness)
         self.points = [mouse]
         self.dragging = True
 
@@ -339,18 +405,59 @@ class GSE_OT_select(bpy.types.Operator):
 
     def finish(self, context):
         global _active
+        if getattr(self, '_finished', False):
+            return {'FINISHED'}
+        self._finished = True
         if self.timer is not None:
-            context.window_manager.event_timer_remove(self.timer)
+            try:
+                self.window_manager.event_timer_remove(self.timer)
+            except (ReferenceError, RuntimeError, ValueError):
+                pass
             self.timer = None
         if self.preview_handle is not None:
-            bpy.types.SpaceView3D.draw_handler_remove(self.preview_handle, 'WINDOW')
+            try:
+                bpy.types.SpaceView3D.draw_handler_remove(self.preview_handle, 'WINDOW')
+            except (ReferenceError, RuntimeError, ValueError):
+                pass
             self.preview_handle = None
-        _active = None
-        context.workspace.status_text_set(None)
-        self.area.tag_redraw()
+        if _active is self:
+            _active = None
+            try:
+                self.workspace.status_text_set(None)
+            except ReferenceError:
+                pass
+        try:
+            self.area.tag_redraw()
+        except ReferenceError:
+            pass
+        self.dragging = False
+        self.pos = self.visible = self.index = self.stroke = None
+        self.points = []
+        return {'FINISHED'}
+
+    def complete_for_mode_switch(self, context):
+        if getattr(self, '_finished', False):
+            return {'FINISHED'}
+        try:
+            if self.tool == 'POLYGON':
+                # A polygon is not committed until Enter closes it. Leaving
+                # edit mode cancels that unfinished gesture, not prior choices.
+                if self.written:
+                    write_mask(self.obj, self.stroke.original)
+            elif self.tool == 'BRUSH':
+                self.flush(force=True)
+            elif self.tool == 'BOX' and len(self.points) >= 2:
+                if np.all(np.asarray(self.points[0]) != self.points[-1]):
+                    self.apply(context, force=True)
+            elif self.tool == 'LASSO' and len(self.points) >= 3:
+                self.apply(context, force=True)
+        finally:
+            self.finish(context)
         return {'FINISHED'}
 
     def cancel(self, context):
+        if getattr(self, '_finished', False):
+            return
         try:
             if self.written:
                 write_mask(self.obj, self.stroke.original)
@@ -358,8 +465,19 @@ class GSE_OT_select(bpy.types.Operator):
             self.finish(context)
 
     def modal(self, context, event):
+        if getattr(self, '_finished', False):
+            return {'FINISHED'}
         try:
+            if event.type == 'TAB':
+                if (event.value == 'PRESS' and context.mode == 'EDIT_POINTCLOUD'
+                        and not (event.ctrl or event.alt or event.shift or event.oskey)):
+                    result = bpy.ops.gse.set_mode(mode='OBJECT')
+                    return {'FINISHED'} if self._finished or 'FINISHED' in result else {'PASS_THROUGH'}
+                return {'PASS_THROUGH'}
             if context.active_object != self.obj or self.obj.data.as_pointer() != self.mesh_pointer or count(self.obj) != self.n or context.mode != self.mode or self.area.type != 'VIEW_3D':
+                if (context.active_object == self.obj and self.obj.data.as_pointer() == self.mesh_pointer
+                        and count(self.obj) == self.n and context.mode != self.mode):
+                    return self.complete_for_mode_switch(context)
                 return self.finish(context)
             return self.handle(context, event)
         except (ReferenceError, RuntimeError, ValueError) as ex:
@@ -373,11 +491,22 @@ class GSE_OT_select(bpy.types.Operator):
             return {'PASS_THROUGH'}
         p = context.scene.gse
         mouse = (event.mouse_x-self.region.x, event.mouse_y-self.region.y)
-        self.mouse = mouse
-        self.area.tag_redraw()
         if event.type in {'ESC', 'RIGHTMOUSE'} and event.value == 'PRESS':
             self.cancel(context)
             return {'CANCELLED'}
+        from .ops import _in_ui_region
+        inside = (0 <= mouse[0] < self.region.width and 0 <= mouse[1] < self.region.height
+                  and not _in_ui_region(self.area, event.mouse_x, event.mouse_y))
+        if not inside:
+            # Release outside the viewport finishes the last valid footprint;
+            # sidebar coordinates must never be appended to the gesture.
+            if event.type == 'LEFTMOUSE' and event.value == 'RELEASE' and self.dragging and self.tool != 'POLYGON':
+                return self.complete_for_mode_switch(context)
+            if not self.dragging or self.tool == 'POLYGON':
+                return {'PASS_THROUGH'}
+            return {'RUNNING_MODAL'}
+        self.mouse = mouse
+        self.area.tag_redraw()
         if event.type in {'RET', 'NUMPAD_ENTER'} and event.value == 'PRESS':
             if self.tool == 'POLYGON' and self.dragging:
                 if len(self.points) >= 3:
@@ -401,10 +530,6 @@ class GSE_OT_select(bpy.types.Operator):
             p.select_radius = max(1, min(1000, p.select_radius + (5 if event.type == 'WHEELUPMOUSE' else -5)))
             self.points = [mouse]
             self.apply(context)
-            return {'RUNNING_MODAL'}
-        from .ops import _in_ui_region
-        inside = 0 <= mouse[0] < self.region.width and 0 <= mouse[1] < self.region.height and not _in_ui_region(self.area, event.mouse_x, event.mouse_y)
-        if not self.dragging and not inside:
             return {'RUNNING_MODAL'}
         if not self.dragging and event.type in {'MIDDLEMOUSE', 'WHEELUPMOUSE', 'WHEELDOWNMOUSE', 'NDOF_MOTION'}:
             return {'PASS_THROUGH'}
@@ -437,6 +562,8 @@ class GSE_OT_select(bpy.types.Operator):
         return {'RUNNING_MODAL'}
 
     def draw_preview(self):
+        if getattr(self, '_finished', False):
+            return
         if bpy.context.area != self.area or bpy.context.region != self.region:
             return
         points = list(self.points)
@@ -631,19 +758,13 @@ def draw_settings(context, layout, tool=None):
         for ident, label, *_ in BRUSH_ACTIONS:
             row.operator('gse.brush_action', text=label, depress=(ident == action)).action = ident
         if action != 'SELECT':
-            from .ui import draw_brush_params, draw_cover_params
+            from .ui import draw_brush_params
             settings = layout.box()
-            if action == 'COVER':
-                draw_cover_params(context, settings)
-            else:
-                draw_brush_params(context, settings, action)
+            draw_brush_params(context, settings, action)
             row = layout.row()
             row.scale_y = 1.2
-            if action == 'COVER':
-                row.operator('gse.cover', text='开始覆盖', icon='MESH_PLANE')
-            else:
-                label = '开始还原' if action == 'RESTORE' else '开始涂抹'
-                row.operator('gse.brush', text=label, icon='BRUSH_DATA').tool = action
+            label = '开始还原' if action == 'RESTORE' else '开始涂抹'
+            row.operator('gse.brush', text=label, icon='BRUSH_DATA').tool = action
             return
     # Blender's native point-cloud tools always project through the cloud.
     depth = 'THROUGH' if props is not None else p.select_depth
@@ -706,6 +827,19 @@ def workspace_tools():
 
 
 @persistent
+def migrate_retired_actions(*_):
+    """Read raw ID properties before RNA resolves the removed enum value."""
+    for scene in bpy.data.scenes:
+        p = getattr(scene, 'gse', None)
+        if p is None:
+            continue
+        if p.get('brush_action') in {2, 'COVER'}:
+            p.brush_action = 'SELECT'
+        if p.get('tool') in {2, 'COVER'}:
+            p.tool = 'ERASE'
+
+
+@persistent
 def migrate_circle_selection(*_):
     for scene in bpy.data.scenes:
         if scene.gse.get('select_shape') in {1, 'CIRCLE'}:
@@ -731,6 +865,8 @@ def migrate_circle_selection(*_):
 
 def register():
     global _handle
+    # Blender restricts bpy.data during add-on enable. Register tools first;
+    # scene migrations must wait until the registration context is released.
     for cls in workspace_tools():
         bpy.utils.register_tool(cls, after={'builtin.select_lasso'})
         _registered_tools.append(cls)
@@ -738,14 +874,17 @@ def register():
         _handle = bpy.types.SpaceView3D.draw_handler_add(draw_selection, (), 'WINDOW', 'POST_PIXEL')
     for name in ('load_post', 'undo_post', 'redo_post'):
         getattr(bpy.app.handlers, name).append(clear_cache)
+        getattr(bpy.app.handlers, name).append(migrate_retired_actions)
     bpy.app.handlers.load_post.append(migrate_circle_selection)
+    bpy.app.timers.register(migrate_retired_actions, first_interval=0.0)
     bpy.app.timers.register(migrate_circle_selection, first_interval=0.0)
 
 
 def unregister():
     global _handle
-    if bpy.app.timers.is_registered(migrate_circle_selection):
-        bpy.app.timers.unregister(migrate_circle_selection)
+    for callback in (migrate_retired_actions, migrate_circle_selection):
+        if bpy.app.timers.is_registered(callback):
+            bpy.app.timers.unregister(callback)
     if migrate_circle_selection in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(migrate_circle_selection)
     if _active is not None:
@@ -758,6 +897,7 @@ def unregister():
         _handle = None
     for name in ('load_post', 'undo_post', 'redo_post'):
         handlers = getattr(bpy.app.handlers, name)
-        if clear_cache in handlers:
-            handlers.remove(clear_cache)
+        for handler in (clear_cache, migrate_retired_actions):
+            if handler in handlers:
+                handlers.remove(handler)
     clear_cache()

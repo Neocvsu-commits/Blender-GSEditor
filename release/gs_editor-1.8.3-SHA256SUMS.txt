@@ -1,0 +1,2 @@
+83f020aaa22531f74ce93123de7f9d7bf980a8e0d2fb6f0c12f1b86fb1748ef0  gs_editor-1.8.3-windows.zip
+83f020aaa22531f74ce93123de7f9d7bf980a8e0d2fb6f0c12f1b86fb1748ef0  gs_editor-1.8.3-macos.zip

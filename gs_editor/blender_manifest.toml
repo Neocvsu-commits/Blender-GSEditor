@@ -1,9 +1,9 @@
 schema_version = "1.0.0"
 
 id = "gs_editor"
-version = "1.5.0"
+version = "1.8.3"
 name = "GS Editor"
-tagline = "高斯建模参考显示与原生点云擦除、还原、覆盖"
+tagline = "高斯建模参考显示与原生点云选择、擦除、还原"
 maintainer = "Neo"
 type = "add-on"
 
@@ -13,7 +13,7 @@ license = ["SPDX:GPL-3.0-or-later"]
 tags = ["3D View"]
 
 [permissions]
-files = "读取高斯参考 PLY，写出编辑后的泼溅点 PLY 与覆盖面片 GLB"
+files = "读取高斯参考 PLY，导出 PLY、SOG、SPZ、Splat、LCC、LCC2"
 network = "检查 GitHub 上的新版本"
 
 [build]
